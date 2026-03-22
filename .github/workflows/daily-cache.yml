@@ -1,0 +1,59 @@
+name: Daily Cache Build
+
+on:
+  schedule:
+    - cron: '0 2 * * *'   # Daily at 02:00 UTC
+  workflow_dispatch:       # Allow manual runs from the Actions tab
+
+permissions:
+  contents: write
+
+jobs:
+  build-cache:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        env_branch: [dev, beta, stable]
+      fail-fast: false
+
+    steps:
+      - name: Checkout database branch
+        uses: actions/checkout@v4
+        with:
+          ref: database
+
+      - name: Checkout conf from ${{ matrix.env_branch }} branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.env_branch }}
+          path: _source
+          sparse-checkout: |
+            conf
+          sparse-checkout-cone-mode: false
+
+      - name: Checkout build script from dev branch
+        uses: actions/checkout@v4
+        with:
+          ref: dev
+          path: _scripts
+          sparse-checkout: |
+            .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Build cache databases
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ENV_BRANCH: ${{ matrix.env_branch }}
+        run: python3 _scripts/.github/scripts/build_cache.py
+
+      - name: Commit and push changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add database/
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "chore: update rule cache databases (${{ matrix.env_branch }}) $(date -u +%Y-%m-%d) [skip ci]"
+            git push origin database
+          fi
