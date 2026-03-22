@@ -15,6 +15,7 @@ jobs:
       matrix:
         env_branch: [dev, beta, stable]
       fail-fast: false
+      max-parallel: 1        # Run sequentially to avoid push conflicts on database branch
 
     steps:
       - name: Checkout database branch
@@ -54,6 +55,7 @@ jobs:
           if git diff --staged --quiet; then
             echo "No changes to commit."
           else
+            git pull --rebase origin database
             git commit -m "chore: update rule cache databases (${{ matrix.env_branch }}) $(date -u +%Y-%m-%d) [skip ci]"
             git push origin database
           fi
