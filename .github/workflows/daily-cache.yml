@@ -11,11 +11,6 @@ permissions:
 jobs:
   build-cache:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        env_branch: [dev, beta, stable]
-      fail-fast: false
-      max-parallel: 1        # Run sequentially to avoid push conflicts on database branch
 
     steps:
       - name: Checkout database branch
@@ -23,31 +18,31 @@ jobs:
         with:
           ref: database
 
-      - name: Checkout conf from ${{ matrix.env_branch }} branch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ matrix.env_branch }}
-          path: _source
-          sparse-checkout: |
-            conf
-          sparse-checkout-cone-mode: false
-
-      - name: Checkout build script from dev branch
-        uses: actions/checkout@v4
-        with:
-          ref: dev
-          path: _scripts
-          sparse-checkout: |
-            .github/scripts
-          sparse-checkout-cone-mode: false
-
-      - name: Build cache databases
+      - name: Build caches for all environments
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ENV_BRANCH: ${{ matrix.env_branch }}
-        run: python3 _scripts/.github/scripts/build_cache.py
+        run: |
+          for BRANCH in dev beta stable; do
+            echo "::group::Building $BRANCH"
 
-      - name: Commit and push changes
+            # Fetch conf from env branch
+            rm -rf _source
+            git clone --depth 1 --branch "$BRANCH" --filter=blob:none --sparse \
+              "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git" _source
+            (cd _source && git sparse-checkout set conf)
+
+            # Fetch build script from dev branch
+            rm -rf _scripts
+            git clone --depth 1 --branch dev --filter=blob:none --sparse \
+              "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git" _scripts
+            (cd _scripts && git sparse-checkout set .github/scripts)
+
+            ENV_BRANCH="$BRANCH" python3 _scripts/.github/scripts/build_cache.py
+
+            echo "::endgroup::"
+          done
+
+      - name: Force-push single commit to database branch
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -55,7 +50,6 @@ jobs:
           if git diff --staged --quiet; then
             echo "No changes to commit."
           else
-            git commit -m "chore: update rule cache databases (${{ matrix.env_branch }}) $(date -u +%Y-%m-%d) [skip ci]"
-            git pull --rebase origin database
-            git push origin database
+            git commit --amend -m "chore: rule cache databases — updated $(date -u +%Y-%m-%d) [skip ci]"
+            git push origin database --force
           fi
