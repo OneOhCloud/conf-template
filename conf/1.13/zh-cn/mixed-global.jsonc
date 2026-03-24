@@ -52,8 +52,9 @@
             "type": "mixed",
             "listen": "127.0.0.1",
             "listen_port": 6789, // 🚫 禁止修改 
-            "reuse_addr": true,
-            "tcp_fast_open": true,
+            // 旧系统可能不支持 reuse_addr 和 tcp_fast_open，且这两个功能并非必要，因此默认禁用
+            // "reuse_addr": false,
+            // "tcp_fast_open": false,
             "set_system_proxy": false // 🚫 禁止修改 
         }
     ],
