@@ -27,10 +27,53 @@
                 "connect_timeout": "5s"
             }
         ],
+        // ZH: DNS 分流规则。与 tun-rules 同构：CN 域名走 system (119.29.29.29 DNSPod)，
+        //     其他全部由 `final: dns_proxy` 兜底，经代理端用 Cloudflare 解析。避免
+        //     非 CN 直连域名被 DNSPod CN 返回审查/错误结果。
+        //     注意：`direct` outbound 仍 pin 在 `domain_resolver: system`，所以
+        //     route.rules 命中 `outbound: direct` 的域名依旧走 DNSPod，这里 final
+        //     影响的是规则匹配阶段和其他不走 direct/代理转发的内部解析路径。
+        // EN: DNS split-routing. Same shape as tun-rules: CN whitelist to `system`,
+        //     everything else falls through `final: dns_proxy` for proxy-side
+        //     Cloudflare resolution. Direct-routed CN traffic still uses the
+        //     `direct` outbound's own `domain_resolver: system`, so it isn't
+        //     affected — these rules cover sing-box's own resolver paths.
+        "rules": [
+            {
+                "query_type": [
+                    "HTTPS",
+                    "SVCB",
+                    "PTR"
+                ],
+                "action": "reject"
+            },
+            {
+                "domain": [
+                    "captive.oneoh.cloud",
+                    "captive.apple.com",
+                    "nmcheck.gnome.org",
+                    "www.msftconnecttest.com",
+                    "connectivitycheck.gstatic.com"
+                ],
+                "rule_set": [
+                    "geoip-cn",
+                    "geosite-cn",
+                    "geosite-apple",
+                    "geosite-microsoft-cn",
+                    "geosite-samsung",
+                    "geosite-private"
+                ],
+                "strategy": "prefer_ipv4",
+                "server": "system"
+            }
+        ],
         "strategy": "prefer_ipv4",
-        // ZH: 🚫 禁止修改
-        // EN: 🚫 Do not modify
-        "final": "system"
+        // ZH: 之前是 "system"，所有非 CN 域名走 DNSPod CN 拿到审查/错误结果。
+        //     改为 "dns_proxy" 让未匹配 CN 白名单的查询经代理走 Cloudflare 解析。
+        // EN: Was "system" which routed every non-CN domain through DNSPod CN,
+        //     yielding censored or wrong results. Switched to "dns_proxy" so
+        //     unmatched queries resolve via Cloudflare through the proxy.
+        "final": "dns_proxy"
     },
     "inbounds": [
         {
