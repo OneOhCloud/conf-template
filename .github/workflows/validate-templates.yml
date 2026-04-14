@@ -1,0 +1,100 @@
+name: Validate templates
+
+on:
+  push:
+    branches: [stable, beta, dev]
+    paths:
+      - 'conf/**'
+      - 'scripts/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'tsconfig.json'
+      - '.github/workflows/validate-templates.yml'
+  pull_request:
+    branches: [stable, beta, dev]
+    paths:
+      - 'conf/**'
+      - 'scripts/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'tsconfig.json'
+      - '.github/workflows/validate-templates.yml'
+  workflow_dispatch:
+
+# What this workflow guards against:
+#   1. Someone hand-edits `conf/1.13/` or `conf/1.12/` instead of the canonical
+#      `conf/1.13.8/` — the drift check fails because `pnpm generate` would
+#      overwrite their manual edits from the canonical source.
+#   2. Someone edits the canonical `conf/1.13.8/` but forgets to run
+#      `pnpm generate` locally — derived versions stay stale. Drift check
+#      catches it.
+#   3. Someone edits the canonical in a way that produces an invalid config
+#      (broken rule_set references, forbidden legacy fields in 1.13.8, etc.)
+#      — the static validator in `scripts/generate.ts` catches it.
+#   4. Someone edits the canonical in a way the sing-box parser rejects
+#      (bad DNS server type, unknown route action, etc.) — `sing-box check`
+#      catches it.
+#
+# sing-box version pin: the validator binary is hard-coded to 1.13.8 below.
+# This proves every generated file is accepted by the 1.13.8 parser, which is
+# the kernel OneBox actually ships. It does NOT prove 1.12-compatibility of
+# the derived `conf/1.12/` files; if that matters, add a second download step
+# for the 1.12 binary and call `generate:strict` a second time with a
+# different SING_BOX_BIN.
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download sing-box binary for validator
+        run: |
+          set -euo pipefail
+          VERSION="1.13.8"
+          URL="https://github.com/SagerNet/sing-box/releases/download/v${VERSION}/sing-box-${VERSION}-linux-amd64.tar.gz"
+          curl -fsSL -o sing-box.tar.gz "$URL"
+          tar xzf sing-box.tar.gz
+          mv "sing-box-${VERSION}-linux-amd64/sing-box" ./sing-box
+          chmod +x ./sing-box
+          ./sing-box version
+
+      - name: Run generator with strict validation
+        env:
+          SING_BOX_BIN: ${{ github.workspace }}/sing-box
+        run: pnpm generate:strict
+
+      - name: Verify no drift from canonical source
+        run: |
+          set -euo pipefail
+          if ! git diff --exit-code; then
+            echo ""
+            echo "::error::Generated files are out of sync with the canonical 1.13.8 source."
+            echo "Someone either:"
+            echo "  (a) hand-edited a derived file in conf/1.13/ or conf/1.12/ — don't."
+            echo "  (b) edited the canonical conf/1.13.8/ and forgot to run 'pnpm generate' locally."
+            echo "  (c) modified scripts/generate.ts and didn't commit the re-generated output."
+            echo ""
+            echo "Fix: run 'pnpm generate' in a local clone and commit the diff."
+            exit 1
+          fi
+          echo "✓ no drift — canonical and derived files are in sync"
