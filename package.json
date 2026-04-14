@@ -1,0 +1,18 @@
+{
+    "name": "conf-template",
+    "version": "0.0.0",
+    "private": true,
+    "type": "module",
+    "description": "sing-box config templates for OneBox. Hand-edit 1.13.8 only; generator syncs to other versions and validates.",
+    "scripts": {
+        "generate": "tsx scripts/generate.ts",
+        "generate:strict": "tsx scripts/generate.ts --strict",
+        "check": "tsx scripts/generate.ts --dry-run"
+    },
+    "devDependencies": {
+        "@types/node": "^22.10.0",
+        "jsonc-parser": "^3.3.1",
+        "tsx": "^4.19.2",
+        "typescript": "^5.6.3"
+    }
+}
