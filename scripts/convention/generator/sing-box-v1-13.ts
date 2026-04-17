@@ -1,17 +1,12 @@
 /**
- * sing-box config generator pinned to the `1.13.8` version bucket.
- * Verified against sing-box 1.13.8 (`sing-box check`).
+ * sing-box config generator pinned to the `1.13` version bucket.
+ * Verified against sing-box 1.13.x (`sing-box check`).
  *
  * Naming convention: one generator file per `conf/<bucket>/` folder,
- * name in lockstep with the folder. The existence of this bucket as
- * a sibling of `1.13` marks the fork point of a breaking change —
- * `scripts/sync-templates.ts` in the OneBox repo routes clients on
- * sing-box ≥ 1.13.8 here instead of `1.13`. The current output happens
- * to be identical to `sing-box-v1-13.ts`, but the files stay separate
- * so the next breaking change in either lineage only touches one.
- *
- * Content currently matches `sing-box-v1-13.ts`. When they diverge,
- * record the delta (and the reason) in the comment block below.
+ * name in lockstep with the folder. The existence of a separate bucket
+ * is itself the marker of a breaking-change fork point — even if two
+ * buckets currently emit identical output, they stay as separate files
+ * so the next breaking change only touches the one bucket that needs it.
  *
  * Diff vs baseline (`sing-box-v1-12.ts`):
  *   + TUN variants emit an `{ network: "icmp", action: "route",

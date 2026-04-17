@@ -32,7 +32,9 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { ZH_CN_INTENT } from './convention/intent/zh-cn.js';
-import { build as buildSingBox } from './convention/generator/sing-box-v1-13-8.js';
+import { build as buildSingBoxV1_12 } from './convention/generator/sing-box-v1-12.js';
+import { build as buildSingBoxV1_13 } from './convention/generator/sing-box-v1-13.js';
+import { build as buildSingBoxV1_13_8 } from './convention/generator/sing-box-v1-13-8.js';
 import { ValidationError, validate } from './convention/validator.js';
 import type { Region, RegionIntent, SingBoxConfig, Variant, Version } from './convention/types.js';
 import { REGIONS, VARIANTS, VERSIONS } from './convention/types.js';
@@ -54,15 +56,31 @@ const INTENTS: Record<Region, RegionIntent> = {
 };
 
 /**
- * Version → generator registry. Currently every supported version uses
- * the same generator (1.12+ all accept its output). When a future
- * sing-box release introduces breaking syntax, add a new generator file
- * under `scripts/convention/generator/` and dispatch by version here.
+ * Version → generator registry — strictly 1:1 with `conf/<bucket>/`.
+ *
+ * The rule: **every version bucket has its own generator file, named to
+ * match the folder.** Creating a new bucket is itself the signal that
+ * some breaking change warrants a separate lineage — even if the new
+ * bucket's output is currently byte-identical to the previous one, the
+ * files stay separate so the next breaking change touches only the
+ * affected bucket, and an older bucket's output never changes because
+ * of a feature we added to a newer one.
+ *
+ * Adding a new version bucket (e.g. `1.13.12`, `1.14`):
+ *   1. Create `conf/<ver>/` and add `<ver>` to `VERSIONS` in
+ *      `./convention/types.ts`.
+ *   2. Copy the most recent generator to `sing-box-v<ver>.ts`.
+ *   3. Add the `<ver>` entry below pointing at the new file.
+ *   4. Record WHY this bucket forks (what broke, or what feature we're
+ *      opting the older buckets out of) in the new file's header comment.
+ *
+ * Never point two buckets at the same generator — if you're tempted to,
+ * you probably don't need the new bucket at all.
  */
 const GENERATORS: Record<Version, (intent: RegionIntent, variant: Variant) => SingBoxConfig> = {
-    '1.13.8': buildSingBox,
-    '1.13': buildSingBox,
-    '1.12': buildSingBox,
+    '1.13.8': buildSingBoxV1_13_8,
+    '1.13': buildSingBoxV1_13,
+    '1.12': buildSingBoxV1_12,
 };
 
 // ---------------------------------------------------------------------------

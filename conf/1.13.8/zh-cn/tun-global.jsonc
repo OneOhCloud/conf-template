@@ -142,6 +142,11 @@
                 "outbound": "direct"
             },
             {
+                "network": "icmp",
+                "action": "route",
+                "outbound": "direct"
+            },
+            {
                 "domain": [
                     "captive.oneoh.cloud",
                     "captive.apple.com",

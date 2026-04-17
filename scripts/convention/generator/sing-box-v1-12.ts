@@ -1,25 +1,16 @@
 /**
- * sing-box config generator pinned to the `1.13.8` version bucket.
- * Verified against sing-box 1.13.8 (`sing-box check`).
+ * sing-box config generator pinned to the `1.12` version bucket.
+ * Verified against sing-box 1.12.x (`sing-box check`).
  *
  * Naming convention: one generator file per `conf/<bucket>/` folder,
- * name in lockstep with the folder. The existence of this bucket as
- * a sibling of `1.13` marks the fork point of a breaking change —
- * `scripts/sync-templates.ts` in the OneBox repo routes clients on
- * sing-box ≥ 1.13.8 here instead of `1.13`. The current output happens
- * to be identical to `sing-box-v1-13.ts`, but the files stay separate
- * so the next breaking change in either lineage only touches one.
- *
- * Content currently matches `sing-box-v1-13.ts`. When they diverge,
- * record the delta (and the reason) in the comment block below.
- *
- * Diff vs baseline (`sing-box-v1-12.ts`):
- *   + TUN variants emit an `{ network: "icmp", action: "route",
- *     outbound: "direct" }` rule after the LAN guard, so `ping` through
- *     TUN returns real end-to-end RTT instead of the TUN interface's
- *     loopback RTT. See `buildIcmpDirectRule` for the full rationale.
- *     This uses the `network: "icmp"` route rule introduced in
- *     sing-box 1.13.0.
+ * name in lockstep with the folder. This file is frozen at the pre-1.13
+ * output shape — no syntax only 1.13+ accepts, no rules that would be
+ * dead weight on 1.12 kernels. When the 1.13 and 1.13.8 buckets were
+ * forked, this file intentionally stayed put: its sole purpose is to
+ * keep producing exactly what a 1.12 kernel's `sing-box check` accepts.
+ * New features live in the newer buckets' generators; this one only
+ * moves if 1.12 kernels themselves change shape, which by definition
+ * they no longer do.
  *
  * Layer contract:
  *   - Takes a `RegionIntent` + `Variant` → produces a valid `SingBoxConfig`.
@@ -327,43 +318,6 @@ function buildRoutePreamble(): unknown[] {
     ];
 }
 
-/**
- * ICMP echo (ping) → `direct`. TUN variants only.
- *
- * Since sing-box 1.13.0, TUN pre-match lifts ICMP echo to the route layer;
- * matched rules whose outbound implements `DirectRouteOutbound` (direct /
- * wireguard / tailscale) send a real ICMP probe via that outbound's dialer
- * and transparently proxy the reply back, so `ping` sees the real end-to-end
- * RTT instead of the TUN interface's loopback RTT.
- *
- * Pinned to `direct` (not `ExitGateway`) because:
- *   - Without an explicit rule, ICMP falls back to `route.final` (ExitGateway).
- *     ExitGateway is a selector; the underlying proxy protocols OneBox ships
- *     (shadowsocks, vmess, trojan, hysteria, vless, ...) do NOT implement
- *     `DirectRouteOutbound`, so the fallback path errors and ICMP is dropped.
- *   - `direct` + `auto_detect_interface: true` binds the probe socket to
- *     the default non-TUN interface, so the ICMP packet leaves the box
- *     through the real network — not back into TUN — and returns real RTT.
- *
- * Pre-1.13 kernels never lift ICMP to the route layer, so this rule is
- * a harmless no-op there (the v1.12 bucket in `conf/1.12/**` still ships
- * it, but no packet ever matches it).
- *
- * Placed at position 4: after the LAN guard at position 3 (so ICMP to a
- * private IP still follows the LAN guard's `direct` decision, which is the
- * same outcome anyway), and before tag anchors — users who inject custom
- * domain/ip rules via the anchors can't accidentally retarget ICMP at a
- * proxy that can't carry it. Tag anchors shift to positions 5/6; the
- * validator's `idx >= 4` check still holds.
- */
-function buildIcmpDirectRule(): unknown {
-    return {
-        network: 'icmp',
-        action: 'route',
-        outbound: CONTRACT_OUTBOUND_TAGS.DIRECT,
-    };
-}
-
 /** Tag anchor pair — user custom rule injection points. Domains are
  *  contracts, not intent data. */
 function buildTagAnchorRules(): unknown[] {
@@ -416,13 +370,9 @@ function buildProcessDirectRule(directSet: DirectSet): unknown {
 
 function buildRouteRules(
     intent: RegionIntent,
-    opts: { isRules: boolean; hasTun: boolean },
+    opts: { isRules: boolean },
 ): unknown[] {
     const rules: unknown[] = [...buildRoutePreamble()];
-
-    if (opts.hasTun) {
-        rules.push(buildIcmpDirectRule());
-    }
 
     if (opts.isRules) {
         rules.push(...buildTagAnchorRules());
@@ -438,7 +388,7 @@ function buildRouteRules(
 
 function buildRoute(
     intent: RegionIntent,
-    opts: { isRules: boolean; hasTun: boolean },
+    opts: { isRules: boolean },
 ): SingBoxConfig['route'] {
     return {
         rules: buildRouteRules(intent, opts),
@@ -465,7 +415,7 @@ export function build(intent: RegionIntent, variant: Variant): SingBoxConfig {
         log: BASE_LOG,
         dns: buildDns(intent, { hasFakeIp: hasTun, isRules }),
         inbounds: buildInbounds({ hasTun }),
-        route: buildRoute(intent, { isRules, hasTun }),
+        route: buildRoute(intent, { isRules }),
         // Deep-clone so mutations by OneBox's runtime merger don't bleed
         // across multiple builds in the same process.
         experimental: JSON.parse(JSON.stringify(EMPTY_EXPERIMENTAL)),

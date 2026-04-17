@@ -55,10 +55,14 @@ after regeneration to reject PRs where committed output drifts from
 what the current source produces.
 
 **5. Version-specific code, version-agnostic data.**
-Every supported sing-box version currently uses the same generator
-(targeting 1.12+ syntax). When a future kernel breaks backward compat,
-add a new file under `generator/` (e.g. `sing-box-v1-14-0.ts`) and
-dispatch by version in `scripts/generate.ts::GENERATORS`. The intent
+Generator files are **1:1 with `conf/<bucket>/` folders** — the bucket's
+existence is the signal that some breaking change warranted its own
+lineage, so it owns its own generator even if, at fork time, the output
+is byte-identical to the previous bucket's. Today that means
+`sing-box-v1-12.ts` for `1.12`, `sing-box-v1-13.ts` for `1.13`, and
+`sing-box-v1-13-8.ts` for `1.13.8`. Filenames mirror folder names —
+`sing-box-v<bucket>.ts`. Never point two buckets at the same generator;
+if you're tempted to, you probably don't need the new bucket. Intent
 files stay untouched — region data doesn't know or care about sing-box
 version.
 
@@ -84,7 +88,7 @@ scripts/convention/
 ├── intent/
 │   └── zh-cn.ts                     # region data (editable)
 ├── generator/
-│   └── sing-box-v1-13-8.ts          # intent → SingBoxConfig (editable on kernel bump)
+│   └── sing-box-v<bucket>.ts        # intent → SingBoxConfig, one file per conf/<bucket>/
 └── validator.ts                     # static rules + consistency invariants
          │
          ▼
@@ -165,7 +169,7 @@ releases and runs the same check on every emitted file.
 | Same for proxy rule_sets | `intent/zh-cn.ts::proxySet.*` |
 | Switch CN direct DNS resolver | `intent/zh-cn.ts::dnsServers.systemDns.server` |
 | Add a new region (e.g. `en-us`) | New file `intent/en-us.ts`, add `'en-us'` to `Region` in `types.ts`, register in `INTENTS` map in `generate.ts` |
-| sing-box kernel bump with breaking syntax | New file `generator/sing-box-vX-Y-Z.ts`, add dispatch branch in `GENERATORS` map in `generate.ts` |
+| New sing-box kernel warrants a fork (breaking syntax, or a feature older buckets must not emit) | Create `conf/<bucket>/`, copy the latest generator to `generator/sing-box-v<bucket>.ts`, add a `VERSIONS` entry and a `GENERATORS` entry in `generate.ts`. One generator per bucket, never shared. |
 | Add a new variant type (e.g. `tun-game`) | Add to `Variant` in `types.ts`, add a builder branch in the generator, add variant-specific validator rule |
 | Runtime consumer's contract tag changed | Update `CONTRACT_*` in `types.ts`. **This is a cross-repo change** — coordinate with the consumer before merging |
 
