@@ -95,6 +95,7 @@ export const ZH_CN_INTENT: RegionIntent = {
             'geosite-linkedin-cn',
         ],
         domainSuffixes: [
+            '.oaiusercontent.com',
             '.tiktok.com',
         ],
     },
