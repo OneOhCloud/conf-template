@@ -14,7 +14,7 @@
  *      `directSet.ruleSets` (route direct) without the generator also
  *      emitting it in dns.rules (server system).
  *
- *   2. Tag anchor priority. For every `-rules` variant, the two tag anchor
+ *   2. Tag anchor priority. For every `-rules` variant, the tag anchor
  *      rules must appear BEFORE any rule_set-based matching. Otherwise
  *      user-custom-rules (merged at runtime into the anchor rules) lose
  *      priority to the built-in geosite rules.
@@ -246,17 +246,48 @@ export function validate(
     // -- 8. Tag anchor priority (rules variants only) -------------------
     // Tag anchor domains come from the OneBox contract, not from intent.
     if (isRulesVariant) {
+        const tagReject = CONTRACT_TAG_ANCHORS.REJECT_DOMAIN;
         const tagDirect = CONTRACT_TAG_ANCHORS.DIRECT_DOMAIN;
         const tagProxy = CONTRACT_TAG_ANCHORS.PROXY_DOMAIN;
+        const idxReject = rules.findIndex((r) => Array.isArray(r?.domain) && r.domain.includes(tagReject));
         const idxDirect = rules.findIndex((r) => Array.isArray(r?.domain) && r.domain.includes(tagDirect));
         const idxProxy = rules.findIndex((r) => Array.isArray(r?.domain) && r.domain.includes(tagProxy));
+        if (idxReject < 0) issues.push(`${variant}: missing tag anchor rule containing contract domain "${tagReject}"`);
         if (idxDirect < 0) issues.push(`${variant}: missing tag anchor rule containing contract domain "${tagDirect}"`);
         if (idxProxy < 0) issues.push(`${variant}: missing tag anchor rule containing contract domain "${tagProxy}"`);
+
+        if (idxReject >= 0 && rules[idxReject]?.action !== 'reject') {
+            issues.push(`${variant}: tag anchor "${tagReject}" must use action "reject"`);
+        }
+        if (idxDirect >= 0 && rules[idxDirect]?.outbound !== CONTRACT_OUTBOUND_TAGS.DIRECT) {
+            issues.push(`${variant}: tag anchor "${tagDirect}" must route to "${CONTRACT_OUTBOUND_TAGS.DIRECT}"`);
+        }
+        if (idxProxy >= 0 && rules[idxProxy]?.outbound !== CONTRACT_OUTBOUND_TAGS.EXIT_GATEWAY) {
+            issues.push(`${variant}: tag anchor "${tagProxy}" must route to "${CONTRACT_OUTBOUND_TAGS.EXIT_GATEWAY}"`);
+        }
+        if (idxReject >= 0 && idxDirect >= 0 && idxReject > idxDirect) {
+            issues.push(
+                `${variant}: tag anchor "${tagReject}" at index ${idxReject} must come before ` +
+                    `"${tagDirect}" at index ${idxDirect}`,
+            );
+        }
+        if (idxDirect >= 0 && idxProxy >= 0 && idxDirect > idxProxy) {
+            issues.push(
+                `${variant}: tag anchor "${tagDirect}" at index ${idxDirect} must come before ` +
+                    `"${tagProxy}" at index ${idxProxy}`,
+            );
+        }
 
         // Tag anchors must come before any rule that uses rule_set, so
         // user overrides take priority over built-in geosite matching.
         const firstRuleSetIdx = rules.findIndex((r) => Array.isArray(r?.rule_set));
         if (firstRuleSetIdx >= 0) {
+            if (idxReject >= 0 && idxReject > firstRuleSetIdx) {
+                issues.push(
+                    `${variant}: tag anchor "${tagReject}" at index ${idxReject} must come before ` +
+                        `first rule_set rule at index ${firstRuleSetIdx} — user custom rules would lose priority`,
+                );
+            }
             if (idxDirect >= 0 && idxDirect > firstRuleSetIdx) {
                 issues.push(
                     `${variant}: tag anchor "${tagDirect}" at index ${idxDirect} must come before ` +
@@ -273,6 +304,9 @@ export function validate(
 
         // Also require anchors to come AFTER the LAN guard (position 3)
         // so private-IP traffic can never be tunneled even via custom proxy rules.
+        if (idxReject >= 0 && idxReject < 4) {
+            issues.push(`${variant}: tag anchor "${tagReject}" at index ${idxReject} must come after LAN guard at index 3`);
+        }
         if (idxDirect >= 0 && idxDirect < 4) {
             issues.push(`${variant}: tag anchor "${tagDirect}" at index ${idxDirect} must come after LAN guard at index 3`);
         }

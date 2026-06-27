@@ -31,8 +31,8 @@
  * dns builder (→ `server: system`). Same for `proxySet`. They cannot drift.
  *
  * Tag anchor priority is guaranteed by construction: the rules variant
- * builder emits tag anchor rules at fixed positions 4 and 5 (after LAN
- * guard, before any rule_set matching). The validator double-checks.
+ * builder emits tag anchor rules after the LAN guard, before any rule_set
+ * matching, with reject before direct before proxy. The validator double-checks.
  */
 
 import type {
@@ -136,7 +136,6 @@ const TUN_INBOUND = {
     // generator symmetry (mixed variants do need it).
     route_exclude_address: [
         '10.0.0.0/8',
-        '100.64.0.0/10',
         '127.0.0.0/8',
         '169.254.0.0/16',
         '172.16.0.0/12',
@@ -318,10 +317,16 @@ function buildRoutePreamble(): unknown[] {
     ];
 }
 
-/** Tag anchor pair — user custom rule injection points. Domains are
+/** Tag anchors — user custom rule injection points. Domains are
  *  contracts, not intent data. */
 function buildTagAnchorRules(): unknown[] {
     return [
+        {
+            domain: [CONTRACT_TAG_ANCHORS.REJECT_DOMAIN],
+            domain_suffix: [],
+            ip_cidr: [],
+            action: 'reject',
+        },
         {
             domain: [CONTRACT_TAG_ANCHORS.DIRECT_DOMAIN],
             domain_suffix: [],

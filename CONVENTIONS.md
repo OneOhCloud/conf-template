@@ -53,7 +53,8 @@ The intent layer removes all of these by construction:
 - One list of direct rule_sets drives both `route.rules` (direct outbound)
   AND `dns.rules` (system transport). Adding one without the other is
   literally impossible.
-- Tag anchor rules are emitted at fixed positions 4-5 by the generator.
+- Tag anchor rules are emitted immediately after the LAN/ICMP guards and
+  before any rule_set matching, with reject before direct before proxy.
   Moving them requires editing the generator, which trips the "are you
   sure?" review bar.
 - Validator rejects every orphan reference before it reaches disk, so
@@ -119,6 +120,7 @@ The contracts:
 | `CONTRACT_OUTBOUND_TAGS.AUTO` | `auto` | urltest fallback; OneBox appends user nodes here too |
 | `CONTRACT_INBOUND_TAGS.TUN` | `tun` | `configureTunInbound` finds this inbound by tag |
 | `CONTRACT_INBOUND_TAGS.MIXED` | `mixed` | `configureMixedInbound` finds this inbound by tag |
+| `CONTRACT_TAG_ANCHORS.REJECT_DOMAIN` | `reject-tag.oneoh.cloud` | user custom reject rules get injected into the route rule containing this domain |
 | `CONTRACT_TAG_ANCHORS.DIRECT_DOMAIN` | `direct-tag.oneoh.cloud` | user custom direct rules get injected into the route rule containing this domain |
 | `CONTRACT_TAG_ANCHORS.PROXY_DOMAIN` | `proxy-tag.oneoh.cloud` | user custom proxy rules ditto |
 | `CONTRACT_MIXED_LISTEN_PORT` | `6789` | hardcoded in TUN `platform.http_proxy` AND in OneBox's system-proxy config |
@@ -180,10 +182,11 @@ or via fallthrough to `dns.final = dns_proxy` (mixed variants).
 
 ### `tagAnchors`
 
-Two magic domain names that OneBox's runtime merger uses as injection
-points for user-supplied custom direct / proxy rules. The generator emits
-them at **route.rules positions 4 and 5** — after the LAN guard, before
-any rule_set matching. The validator double-checks this.
+Three magic domain names that OneBox's runtime merger uses as injection
+points for user-supplied custom reject / direct / proxy rules. The generator
+emits them after the LAN guard (and after the ICMP direct guard in TUN
+variants), before any rule_set matching, with reject before direct before
+proxy. The validator double-checks this.
 
 Do NOT move these unless you're willing to break the user-custom-rule
 priority contract. OneBox finds these anchors by exact domain match at

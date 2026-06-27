@@ -98,6 +98,14 @@
             },
             {
                 "domain": [
+                    "reject-tag.oneoh.cloud"
+                ],
+                "domain_suffix": [],
+                "ip_cidr": [],
+                "action": "reject"
+            },
+            {
+                "domain": [
                     "direct-tag.oneoh.cloud"
                 ],
                 "domain_suffix": [],
@@ -114,6 +122,7 @@
             },
             {
                 "domain_suffix": [
+                    ".oaiusercontent.com",
                     ".tiktok.com"
                 ],
                 "rule_set": [

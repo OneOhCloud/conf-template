@@ -78,6 +78,7 @@ export const CONTRACT_INBOUND_TAGS = {
  * arrays. Changing these breaks user custom-rule injection.
  */
 export const CONTRACT_TAG_ANCHORS = {
+    REJECT_DOMAIN: 'reject-tag.oneoh.cloud',
     DIRECT_DOMAIN: 'direct-tag.oneoh.cloud',
     PROXY_DOMAIN: 'proxy-tag.oneoh.cloud',
 } as const;
