@@ -92,13 +92,18 @@ export const CONTRACT_MIXED_LISTEN_PORT = 6789 as const;
 
 /**
  * Fake IP ranges. These are RFC-reserved ranges that the TUN stack
- * recognises as "fake". Safe to leave as constants because changing them
- * would mean the user's runtime DNS cache (keyed on these ranges) would
- * collide with real traffic.
+ * recognises as "fake". Changing them invalidates the user's runtime DNS
+ * cache (keyed on these ranges), so treat them as stable constants.
+ *
+ * Both ranges MUST stay outside every `route_exclude_address` entry: an
+ * excluded prefix is routed around the TUN, so a fakeip range sitting inside
+ * one is never hijacked and its traffic fails silently. The previous INET6
+ * value `fc00::/18` sat inside the excluded ULA block `fc00::/7`, which broke
+ * IPv6 fakeip; `2001:2::/48` (RFC 5180 benchmarking) is outside all of them.
  */
 export const CONTRACT_FAKEIP_RANGES = {
     INET4: '198.18.0.0/15',
-    INET6: 'fc00::/18',
+    INET6: '2001:2::/48',
 } as const;
 
 // ===========================================================================
