@@ -103,7 +103,7 @@
                     "server_port": 6789
                 }
             },
-            "mtu": 9000,
+            "mtu": 1500,
             "stack": "gvisor",
             "auto_route": true,
             "strict_route": true,

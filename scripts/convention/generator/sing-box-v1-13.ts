@@ -130,7 +130,11 @@ const TUN_INBOUND = {
             server_port: CONTRACT_MIXED_LISTEN_PORT,
         },
     },
-    mtu: 9000,
+    // TUN 侧 MTU 只决定本机应用与用户态栈之间的分段大小，不是真实链路 MTU，
+    // 故 jumbo 值买不到吞吐；而用户态栈的每连接收发环按 MTU 派生，9000 会把
+    // 每连接常驻抬到 4 倍，在有硬性内存上限的宿主（iOS NetworkExtension）上
+    // 足以致命。取 1500 与真实链路一致。
+    mtu: 1500,
     stack: 'gvisor',
     auto_route: true,
     strict_route: true,
