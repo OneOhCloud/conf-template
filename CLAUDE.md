@@ -113,13 +113,19 @@ cannot add a rule_set to `directSet.ruleSets` without the generator
 emitting it in both `route.rules` and `dns.rules` — the data is single-
 sourced, and the validator cross-checks the output anyway as a belt.
 
-**(b) Tag anchor priority.** For every `-rules` variant, the two tag
-anchor rules (whose exact domain strings are contract constants) must
-appear in `route.rules` BEFORE any rule using `rule_set` matching. This
-preserves the "user-injected custom rule" priority contract that
-downstream consumers rely on — a runtime merger that appends into the
-anchor rules' `domain` / `domain_suffix` / `ip_cidr` arrays should win
-against the built-in geosite matching.
+**(b) Tag anchor priority.** For every `-rules` variant, the three tag
+anchor rules — reject, then direct, then proxy, whose exact domain strings
+are contract constants — must appear in `route.rules` BEFORE any
+**routing** rule that uses `rule_set` matching. This preserves the
+"user-injected custom rule" priority contract that downstream consumers
+rely on — a runtime merger that appends into the anchor rules' `domain` /
+`domain_suffix` / `ip_cidr` arrays should win against the built-in geosite
+matching.
+
+Only rules that decide an outbound count. A non-final action — the scoped
+`resolve` in (d) — may reference a rule_set earlier without taking the
+decision away from a user's custom rule: whatever it resolves or skips,
+the anchors still match first when the outbound is picked.
 
 **(c) Contract tag presence.** Every generated config must contain DNS
 server tags / outbound tags / inbound tags / tag anchor domains / mixed
@@ -129,8 +135,27 @@ refactor of the generator accidentally drifting from the runtime
 consumer contract.
 
 **(d) Required preamble.** Every variant's `route.rules` must start with
-exactly `sniff` / `hijack-dns` / `quic reject` / `ip_is_private LAN
-guard` in positions 0–3. Any shift of these is a structural bug.
+`sniff` / `hijack-dns` / `quic reject` in positions 0–2. `-rules` variants
+then carry a `resolve` at position 3, moving the `ip_is_private` LAN guard
+to 4; `-global` variants carry no route-level resolve and keep the LAN
+guard at 3. Any other shift is a structural bug.
+
+That resolve is scoped twice, and both scopes are load-bearing:
+
+- **`inbound: ["mixed"]`** — a proxy-protocol client hands over a
+  hostname, so on that path the destination stays a domain and no IP rule
+  (LAN guard included) can ever match. The TUN datapath must NOT be
+  resolved: there the client already resolved through our hijacked DNS, so
+  in-region hosts arrive as a real IP and everything else arrives as a
+  fakeip the router maps back to its domain. Both TUN and mixed variants
+  ship a mixed inbound — in the TUN variants it is what
+  `platform.http_proxy` points at — so both need the rule and neither
+  wants it wider.
+- **inverted against `proxySet.foreignDomainRuleSet`** — known-overseas
+  domains keep their FQDN, so the egress receives the hostname and
+  resolves it itself, matching what fakeip gives the TUN datapath. The
+  remainder (in-region hosts, LAN names, anything unlisted) is resolved,
+  which is exactly the set that needs an IP for the rules below to fire.
 
 **(e) Forbidden legacy fields.** No inbound may carry `sniff` or
 `sniff_override_destination` — these were deprecated in sing-box 1.11
@@ -142,9 +167,51 @@ where someone manually re-introduces them.
 Every `dns.final` / `route.final` must name an existing server /
 outbound. Catches typos before sing-box sees the config.
 
+**(g) In-region address filter.** Every `-rules` variant's `dns.rules`
+must carry `{rule_set: [<ipRuleSet>], ip_is_private: true, server:
+system}` between the direct set rule and the fakeip catchall, and that
+rule must NOT carry `query_type`. It is what makes an *unlisted* domain
+that resolves into the region route direct: sing-box asks `system` first
+and adopts the answer only if it lands in the region or on a private
+address, otherwise the rule is skipped and the query falls through to
+fakeip / `dns.final`. A `query_type` on it would make sing-box skip it on
+the internal-lookup path, killing the filter silently.
+
+The known-overseas short-circuit (`proxySet.foreignDomainRuleSet` →
+proxy-side resolver) must come before it, or a poisoned CN answer for a
+foreign domain gets adopted and routed direct — verified poison addresses
+that land inside `geoip-cn`: `202.106.199.34`, `159.106.121.75`.
+
+An *unconditional* route-level resolve would be the wrong tool for the
+same job: it fills `metadata.DestinationAddresses` for every destination,
+and sing-box then dials each outbound from that list, so proxied
+connections reach the egress as an IP. That is why the resolve in (d) is
+scoped to the mixed inbound and skips the known-overseas set.
+
 Failure mode of validation: `ValidationError` is thrown, `generate.ts`
 prints the error block, no files are touched. CI surface is a red cross
 on the PR with the error inline.
+
+## Deployment prerequisite: the client's DNS must flow through the tunnel
+
+The whole split-routing model assumes the client asks *our* resolver. If it
+doesn't, the client gets a poisoned answer, connects straight to that IP,
+and the router can only hand that dead address to the egress — no config
+rule recovers it (sing-box 1.13.8's `sniff` action has no
+`override_destination`, so a sniffed hostname cannot replace an IP
+destination).
+
+This is not hypothetical: on macOS, `mDNSResponder` sends interface-scoped
+queries to the ISP-provided resolver and never enters TUN, so a CLI-only
+`sing-box run` of the TUN template leaves foreign sites broken while CN
+sites work. Verified — only explicitly-targeted `dig` traffic hit
+`hijack-dns`; the system resolver's did not.
+
+The host is responsible for pointing system DNS into the tunnel (OneBox
+does it through its NetworkExtension; a CLI reproduction needs
+`networksetup -setdnsservers <service> <public ip>`). With that in place the
+same config resolves foreign domains to fakeip and the egress receives
+hostnames.
 
 ## `sing-box check` (semantic validation)
 
@@ -166,6 +233,8 @@ releases and runs the same check on every emitted file.
 |---|---|
 | Add / remove a domain for CN direct routing | `intent/zh-cn.ts::directSet.domains` |
 | Add / remove a CN rule_set category | `intent/zh-cn.ts::directSet.ruleSets` (+ `ruleSetDefinitions` if new tag) |
+| Change which rule_set defines "in-region IPs" | `intent/zh-cn.ts::directSet.ipRuleSet` — drives the DNS address filter; must also be listed in `ruleSets` |
+| Change which rule_set defines "known-overseas domains" | `intent/zh-cn.ts::proxySet.foreignDomainRuleSet` — gates the address filter and the route-level resolve; DNS side only |
 | Same for proxy rule_sets | `intent/zh-cn.ts::proxySet.*` |
 | Switch CN direct DNS resolver | `intent/zh-cn.ts::dnsServers.systemDns.server` |
 | Add a new region (e.g. `en-us`) | New file `intent/en-us.ts`, add `'en-us'` to `Region` in `types.ts`, register in `INTENTS` map in `generate.ts` |

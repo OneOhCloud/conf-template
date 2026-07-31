@@ -57,6 +57,9 @@ export const ZH_CN_INTENT: RegionIntent = {
             'geosite-samsung',
             'geosite-private',
         ],
+        // The IP half of the set above. Doubles as the DNS address filter that
+        // decides "unlisted domain, but it resolves into China → direct".
+        ipRuleSet: 'geoip-cn',
         domains: [
             'captive.oneoh.cloud',
             'captive.apple.com',
@@ -98,6 +101,10 @@ export const ZH_CN_INTENT: RegionIntent = {
             '.oaiusercontent.com',
             '.tiktok.com',
         ],
+        // Known-overseas domains. DNS-side short-circuit so they are never
+        // asked at DNSPod CN — a poisoned answer landing inside geoip-cn
+        // would otherwise be adopted and the domain routed direct.
+        foreignDomainRuleSet: 'geosite-geolocation-!cn',
     },
 
     // --- rule_set registry -------------------------------------------------
@@ -131,14 +138,25 @@ export const ZH_CN_INTENT: RegionIntent = {
         {
             tag: 'geosite-geolocation-!cn',
             type: 'remote',
-            format: 'source',
-            url: 'https://jsdelivr.oneoh.cloud/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/geolocation-!cn.json',
+            format: 'binary',
+            // binary, not the source JSON: this set is now load-bearing (it
+            // gates the DNS address filter), and .srs is 164K against 688K.
+            url: 'https://jsdelivr.oneoh.cloud/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/geolocation-!cn.srs',
         },
         {
             tag: 'geosite-cn',
             type: 'remote',
             format: 'binary',
-            url: 'https://jsdelivr.oneoh.cloud/gh/OneOhCloud/one-geosite@rules/geosite-one-cn.srs',
+            // Upstream `cn` category (geolocation-cn + tld-cn), same publisher
+            // as the other geosite sets here. Replaced a hand-maintained list
+            // that carried 11 ip_cidr entries (Netflix + TW ranges) inside its
+            // domain rule — those matched destination IPs in route.rules and
+            // forced that traffic direct, and they made every DNS rule
+            // referencing the set address-limited, so TXT / MX / SRV for CN
+            // domains skipped it. Long-tail CN sites dropped by the switch are
+            // now picked up by the DNS address filter instead: they resolve to
+            // a CN IP, so they go direct without being listed anywhere.
+            url: 'https://jsdelivr.oneoh.cloud/gh/SagerNet/sing-geosite@rule-set/geosite-cn.srs',
         },
         {
             tag: 'geosite-apple',

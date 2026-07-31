@@ -65,13 +65,26 @@
                     "seed-sequoia.siri.apple.com"
                 ],
                 "rule_set": [
-                    "geoip-cn",
                     "geosite-cn",
                     "geosite-apple",
                     "geosite-microsoft-cn",
                     "geosite-samsung",
                     "geosite-private"
                 ],
+                "strategy": "prefer_ipv4",
+                "server": "system"
+            },
+            {
+                "rule_set": [
+                    "geosite-geolocation-!cn"
+                ],
+                "server": "remote"
+            },
+            {
+                "rule_set": [
+                    "geoip-cn"
+                ],
+                "ip_is_private": true,
                 "strategy": "prefer_ipv4",
                 "server": "system"
             },
@@ -155,6 +168,25 @@
             {
                 "protocol": "quic",
                 "action": "reject"
+            },
+            {
+                "type": "logical",
+                "mode": "and",
+                "rules": [
+                    {
+                        "inbound": [
+                            "mixed"
+                        ]
+                    },
+                    {
+                        "rule_set": [
+                            "geosite-geolocation-!cn"
+                        ],
+                        "invert": true
+                    }
+                ],
+                "action": "resolve",
+                "strategy": "prefer_ipv4"
             },
             {
                 "ip_is_private": true,
@@ -272,14 +304,14 @@
             {
                 "tag": "geosite-geolocation-!cn",
                 "type": "remote",
-                "format": "source",
-                "url": "https://jsdelivr.oneoh.cloud/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/geolocation-!cn.json"
+                "format": "binary",
+                "url": "https://jsdelivr.oneoh.cloud/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/geolocation-!cn.srs"
             },
             {
                 "tag": "geosite-cn",
                 "type": "remote",
                 "format": "binary",
-                "url": "https://jsdelivr.oneoh.cloud/gh/OneOhCloud/one-geosite@rules/geosite-one-cn.srs"
+                "url": "https://jsdelivr.oneoh.cloud/gh/SagerNet/sing-geosite@rule-set/geosite-cn.srs"
             },
             {
                 "tag": "geosite-apple",

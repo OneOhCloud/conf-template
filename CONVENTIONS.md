@@ -17,16 +17,18 @@ that pulls them off the CDN). Before you edit anything, read this file.
 
 3. **Every run is validated.** Static checks (reference integrity,
     forbidden legacy fields, required preamble, **DNS/route consistency**,
-    **tag anchor priority**) + `sing-box check` (under `--strict` /
+    **tag anchor priority**, **in-region address filter**) + `sing-box
+    check` (under `--strict` /
     `SING_BOX_BIN`) both run before any file is written. A failure
     aborts the run and touches nothing.
 
-4. **Intent is version-agnostic; generator is version-specific.** Every
-    supported sing-box version (`1.12`, `1.13`, `1.13.8`) currently uses
-    the same generator because its output is 1.12-compatible. When a
-    future sing-box ships breaking syntax, add a new file under
-    `generator/` and dispatch by version in `scripts/generate.ts`. The
-    intent files stay untouched.
+4. **Intent is version-agnostic; generator is version-specific.** Each
+    `conf/<bucket>/` folder owns exactly one generator file of the same
+    name — `sing-box-v1-12.ts`, `sing-box-v1-13.ts`, `sing-box-v1-13-8.ts`
+    — and `GENERATORS` in `scripts/generate.ts` dispatches by version.
+    Never point two buckets at one generator, even when their output is
+    currently identical: the bucket exists so the next breaking change
+    touches only the lineage that needs it. Intent files stay untouched.
 
 5. **Intent is region-specific; generator is region-agnostic.** A new
     region means dropping a new file under `intent/`, importing it into
@@ -71,7 +73,9 @@ conf-template/
 │       ├── intent/
 │       │   └── zh-cn.ts                     # zh-cn's direct set, proxy set, tag anchors, rule_set registry
 │       ├── generator/
-│       │   └── sing-box-v1-13-8.ts          # current sing-box generator (1.12+ compatible)
+│       │   ├── sing-box-v1-12.ts            # one generator per conf/<bucket>/, name in lockstep
+│       │   ├── sing-box-v1-13.ts
+│       │   └── sing-box-v1-13-8.ts
 │       └── validator.ts                     # static rules + DNS/route consistency + tag anchor priority
 ├── conf/
 │   ├── 1.13.8/<region>/*.jsonc              # AUTO-GENERATED — do not edit
@@ -142,15 +146,17 @@ Every `RegionIntent` object holds:
 
 ### `dnsServers`
 
-Three named transports that the generator wires into `dns.servers`:
+Two named transports that the generator wires into `dns.servers`:
 
 - **`systemDns`**: resolves directly, without proxy. For zh-cn this is
   DNSPod CN (`119.29.29.29`). Direct-routed traffic uses this.
 - **`dnsProxy`**: resolves through the proxy egress. `tcp` type with
   `detour: ExitGateway`. For non-CN traffic.
-- **`fakeIp`**: synthetic IP pool (`198.18.0.0/15`). Only used in TUN
-  variants to avoid leaking proxy-destined hostnames to the system
-  resolver.
+
+The fakeip transport (`remote`, `198.18.0.0/15`) is NOT an intent field —
+its ranges are `CONTRACT_FAKEIP_RANGES` and the generator emits it only for
+TUN variants, to avoid leaking proxy-destined hostnames to the system
+resolver.
 
 ### `directSet` — routed direct AND resolved via `systemDns`
 
@@ -163,6 +169,15 @@ reads it twice:
 Fields that apply to both (route AND DNS): `ruleSets`, `domains`. Fields
 that apply only to route: `domainSuffixes`, `ipIsPrivate`, `processPaths`,
 `processPathRegex`.
+
+- **`ipRuleSet`**: the one rule_set in `ruleSets` that holds IP CIDRs
+  (`geoip-cn`). The DNS builder pulls it *out* of the domain-matching rule
+  (an IP rule_set sitting next to domain items is inert — sing-box ignores
+  ip_cidr while matching a question, and the answer check passes on any
+  matched item) and emits it as a standalone **address filter**: unlisted
+  domains are asked at `systemDns` first and the answer is kept only if it
+  lands in-region or on a private address; otherwise the query falls through
+  to fakeip / `dnsProxy` and the *domain* — not an IP — reaches the proxy.
 
 Editing:
 - New CN rule_set (e.g. a new geosite category)? Add to `ruleSets` +
@@ -179,6 +194,17 @@ Editing:
 Same single-source principle in reverse. Route rules that force traffic
 through the proxy get their DNS resolved either via fakeip (tun variants)
 or via fallthrough to `dns.final = dns_proxy` (mixed variants).
+
+- **`foreignDomainRuleSet`**: the known-overseas domain set
+  (`geosite-geolocation-!cn`). DNS side only — it is deliberately kept out
+  of route.rules, where it would sit in front of the direct set and flip
+  domains that appear in both lists. Its job is to send known-foreign
+  domains straight to the proxy-side resolver *before*
+  `directSet.ipRuleSet`'s address filter probes them at `systemDns`:
+  otherwise every foreign domain is asked at the CN resolver first, and a
+  poisoned answer landing inside `geoip-cn` would be adopted and that
+  domain routed direct into a blackhole. Verified poison addresses that
+  would do it: `202.106.199.34`, `159.106.121.75` — both inside `geoip-cn`.
 
 ### `tagAnchors`
 
@@ -254,16 +280,30 @@ Runs on every generator output before write. Checks:
    on any inbound (rejected by 1.13.8)
 6. **Variant structural requirements**: `tun-*` must have a `tun` inbound;
    `mixed-*` must not
-7. **Required route rules preamble**: `route.rules[0-3]` must be exactly
-   sniff / hijack-dns / quic reject / LAN guard in that order
-8. **Tag anchor priority** (rules variants only): both anchors must appear
-   AFTER the LAN guard at position 3 and BEFORE any rule_set-based
-   matching. Catches the "user custom rules silently demoted" class
-   structurally.
+7. **Required route rules preamble**: `route.rules[0-2]` must be exactly
+   sniff / hijack-dns / quic reject. `-rules` variants then carry a
+   `resolve` at index 3 — scoped to `inbound: ["mixed"]` and inverted
+   against `proxySet.foreignDomainRuleSet`, so the TUN datapath is left to
+   fakeip and known-overseas domains reach the egress as hostnames — which
+   moves the LAN guard to 4. `-global` variants carry no route-level
+   resolve and keep the LAN guard at 3
+8. **Tag anchor priority** (rules variants only): all three anchors
+   (reject / direct / proxy, in that order) must appear AFTER the LAN guard
+   — index 4 in these variants — and BEFORE any **routing** rule that uses
+   rule_set matching. Non-final actions are exempt: the scoped `resolve`
+   references a rule_set earlier but never picks an outbound. Catches the
+   "user custom rules silently demoted" class structurally.
 9. **DNS / route consistency** (rules variants only): every rule_set
    routed `direct` in route.rules must resolve via `system` in dns.rules,
    and every rule_set routed `ExitGateway` must NOT resolve via `system`.
    Catches the `www.qq.com → overseas IP` class structurally.
+10. **In-region address filter** (rules variants only): `dns.rules` must
+    contain `{rule_set:[<ipRuleSet>], ip_is_private:true, server:system}`,
+    without `query_type`, positioned after the direct set rule and before
+    the fakeip catchall. Catches the "unlisted domain hosted in-region gets
+    proxied" class, and guards the two ways the rule silently dies (a
+    `query_type` makes sing-box skip it on internal lookups; sitting after
+    the fakeip catchall means it never runs).
 
 A failure throws `ValidationError` and aborts the run. The validator
 runs BEFORE any file write, so failed runs leave the repo clean.

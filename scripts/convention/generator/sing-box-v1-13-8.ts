@@ -263,11 +263,43 @@ function buildDnsRules(
         });
     }
 
-    // Direct set → system DNS.
+    // Direct set → system DNS. Domain-matching rule_sets only: an IP rule_set
+    // listed alongside domains is inert. A DNS rule ignores ip_cidr items
+    // while matching the question (`rule_dns.go` `Match` sets
+    // `IgnoreDestinationIPCIDRMatch`), and the answer check
+    // (`MatchAddressLimit`) passes as soon as ANY item matched — the domain
+    // hit alone satisfies it, so a non-CN answer is never rejected. The IP set
+    // only filters anything as a rule of its own, which is the next one.
     if (opts.isRules) {
         rules.push({
             domain: intent.directSet.domains,
-            rule_set: intent.directSet.ruleSets,
+            rule_set: intent.directSet.ruleSets.filter((tag) => tag !== intent.directSet.ipRuleSet),
+            strategy: 'prefer_ipv4',
+            server: CONTRACT_DNS_TAGS.SYSTEM,
+        });
+        // Known-overseas domains: straight to the proxy-side resolver, before
+        // the address filter below can probe them at `system`. Two reasons:
+        // a poisoned answer that happens to land inside the in-region IP set
+        // would be adopted and route that domain direct into a blackhole, and
+        // even when the poison is caught the probe is a wasted round trip.
+        rules.push({
+            rule_set: [intent.proxySet.foreignDomainRuleSet],
+            server: opts.hasFakeIp ? CONTRACT_DNS_TAGS.FAKEIP : CONTRACT_DNS_TAGS.DNS_PROXY,
+        });
+        // Everything nobody listed: probe `system`, keep the answer only if
+        // it is an in-region or private address. sing-box reads the
+        // rule_set's ip_cidr items and `ip_is_private` here as an ADDRESS
+        // FILTER — a non-matching response makes this rule skipped and
+        // matching continues, so foreign domains fall through to the fakeip
+        // catchall (tun) or dns.final (mixed) and reach the proxy as a
+        // domain, not an IP.
+        //
+        // Carries no `query_type` on purpose: a DNS rule with one is skipped
+        // on the internal-lookup path (internal lookups have no query type),
+        // which would kill this rule silently.
+        rules.push({
+            rule_set: [intent.directSet.ipRuleSet],
+            ip_is_private: true,
             strategy: 'prefer_ipv4',
             server: CONTRACT_DNS_TAGS.SYSTEM,
         });
@@ -310,14 +342,18 @@ function buildDns(
 // ---------------------------------------------------------------------------
 
 /**
- * The preamble: rules 0-3, identical in every variant.
+ * The preamble.
  *   0. Universal sniff — `{ action: "sniff" }`, no inbound filter.
  *   1. hijack-dns via logical OR (protocol=dns OR port=53).
  *   2. QUIC reject.
- *   3. LAN guard: private IPs → direct, BEFORE user tag anchors.
+ *   3. Non-TUN rules variants only: resolve (see below).
+ *   4. LAN guard: private IPs → direct, BEFORE user tag anchors.
  */
-function buildRoutePreamble(): unknown[] {
-    return [
+function buildRoutePreamble(
+    intent: RegionIntent,
+    opts: { isRules: boolean; hasTun: boolean },
+): unknown[] {
+    const preamble: unknown[] = [
         { action: 'sniff' },
         {
             type: 'logical',
@@ -326,8 +362,55 @@ function buildRoutePreamble(): unknown[] {
             action: 'hijack-dns',
         },
         { protocol: 'quic', action: 'reject' },
-        { ip_is_private: true, outbound: CONTRACT_OUTBOUND_TAGS.DIRECT },
     ];
+
+    // Non-TUN rules variants only. A proxy-protocol client hands over a
+    // hostname, so the destination stays a domain and NO IP rule can ever
+    // match: without this, an in-region host nobody listed falls through to
+    // route.final and gets proxied, and the LAN guard never fires either.
+    // Resolving fills `metadata.DestinationAddresses`, which the IP rules
+    // below (and the direct set's IP rule_set) then match on.
+    //
+    // TUN must NOT have this. There the client resolves through our hijacked
+    // DNS first, so in-region hosts already arrive as a real IP and everything
+    // else arrives as a fakeip that maps back to its domain — a resolve would
+    // undo exactly that and hand the egress an IP instead of the hostname.
+    //
+    // Scoped to the mixed inbound, and inverted against the known-overseas
+    // set. Two conditions, both load-bearing:
+    //
+    //   inbound = mixed — a proxy-protocol client hands over a hostname, so
+    //     the destination stays a domain and no IP rule (LAN guard included)
+    //     can ever match. The TUN datapath must NOT be resolved: there the
+    //     client already resolved through our hijacked DNS, so in-region
+    //     hosts arrive as a real IP and everything else arrives as a fakeip
+    //     the router maps back to its domain. Both variants carry a mixed
+    //     inbound — in the TUN variants it is what `platform.http_proxy`
+    //     points at — so both need this, and neither wants it wider.
+    //
+    //   NOT in the known-overseas set — those keep their FQDN so the egress
+    //     receives the hostname and resolves it itself, matching what fakeip
+    //     gives the TUN datapath. The remainder (in-region hosts, LAN names,
+    //     anything unlisted) is resolved, which is exactly the set that needs
+    //     an IP for the rules below to fire.
+    //
+    // Cost is confined to that remainder: a lookup before routing, and a
+    // failed lookup drops the connection.
+    if (opts.isRules) {
+        preamble.push({
+            type: 'logical',
+            mode: 'and',
+            rules: [
+                { inbound: [CONTRACT_INBOUND_TAGS.MIXED] },
+                { rule_set: [intent.proxySet.foreignDomainRuleSet], invert: true },
+            ],
+            action: 'resolve',
+            strategy: 'prefer_ipv4',
+        });
+    }
+
+    preamble.push({ ip_is_private: true, outbound: CONTRACT_OUTBOUND_TAGS.DIRECT });
+    return preamble;
 }
 
 /**
@@ -427,7 +510,7 @@ function buildRouteRules(
     intent: RegionIntent,
     opts: { isRules: boolean; hasTun: boolean },
 ): unknown[] {
-    const rules: unknown[] = [...buildRoutePreamble()];
+    const rules: unknown[] = [...buildRoutePreamble(intent, opts)];
 
     if (opts.hasTun) {
         rules.push(buildIcmpDirectRule());

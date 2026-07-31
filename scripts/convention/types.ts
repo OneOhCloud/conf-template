@@ -171,6 +171,23 @@ export interface IntentTcpDns {
 export interface DirectSet {
     /** rule_set tags routed direct AND resolved via `system` DNS. */
     ruleSets: string[];
+    /**
+     * The rule_set of in-region IP CIDRs (for zh-cn: `geoip-cn`). Must also
+     * appear in `ruleSets` — it is the IP half of the direct set.
+     *
+     * Emitted as a DNS **address filter** rule: a domain nobody listed is
+     * asked at `system` first, and the answer is adopted only if it lands in
+     * this set or on a private address. Anything else makes sing-box skip the
+     * rule and keep matching (`dns/router.go` `addressLimitResponseCheck`), so
+     * the query falls through to fakeip / `dns.final` and the destination
+     * stays a DOMAIN all the way to the proxy.
+     *
+     * This is what makes "in-region IP goes direct" work without a route-level
+     * `{"action":"resolve"}`. A resolve action would fill
+     * `metadata.DestinationAddresses`, and sing-box then dials every outbound
+     * — proxy ones included — by IP, so the egress never sees the domain.
+     */
+    ipRuleSet: string;
     /** Explicit domains routed direct AND resolved via `system`. */
     domains: string[];
     /**
@@ -204,6 +221,20 @@ export interface DirectSet {
 export interface ProxySet {
     ruleSets: string[];
     domainSuffixes: string[];
+    /**
+     * rule_set of domains known to live outside the region. DNS side only —
+     * it is NOT emitted into route.rules, because routing already sends
+     * anything unmatched to the proxy and putting it in front of the direct
+     * set would flip domains that appear in both lists.
+     *
+     * It short-circuits those domains to the proxy-side resolver *before*
+     * `DirectSet.ipRuleSet`'s address filter can probe them at the direct
+     * resolver. Without it, every foreign domain is asked at the in-region
+     * resolver first, and a poisoned answer that happens to fall inside
+     * `ipRuleSet` would be adopted — routing that domain direct into a
+     * blackhole. It also saves the wasted round trip.
+     */
+    foreignDomainRuleSet: string;
 }
 
 /** Intent for one region. Tag names, anchors, and ports are contracts,

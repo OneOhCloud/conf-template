@@ -23,7 +23,7 @@ scripts/
 ├── generate.ts                           # pipeline entry
 └── convention/
     ├── intent/<region>.ts                # region data — the only file humans edit
-    ├── generator/sing-box-v1-13-8.ts     # version-specific compiler
+    ├── generator/sing-box-v<bucket>.ts   # one compiler per conf/<bucket>/
     ├── validator.ts                      # ref integrity, DNS/route consistency, tag anchors
     └── types.ts                          # load-bearing contract constants
 

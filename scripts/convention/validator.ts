@@ -18,6 +18,13 @@
  *      rules must appear BEFORE any rule_set-based matching. Otherwise
  *      user-custom-rules (merged at runtime into the anchor rules) lose
  *      priority to the built-in geosite rules.
+ *
+ *   3. In-region address filter. For every `-rules` variant, dns.rules must
+ *      carry the `ip_is_private` + in-region rule_set filter, without a
+ *      `query_type`, sitting between the direct set and the fakeip catchall.
+ *      That rule is what lets an unlisted domain resolving into the region
+ *      route direct while every other domain still reaches the proxy as a
+ *      domain rather than an IP.
  */
 
 import type { RegionIntent, SingBoxConfig, Variant } from './types';
@@ -44,13 +51,6 @@ export function validate(
     intent: RegionIntent,
     fileLabel: string,
 ): void {
-    // `intent` is currently unused — all contract values (tags, anchors)
-    // come from the CONTRACT_* constants. Parameter is kept in the signature
-    // so future validator rules can cross-check intent vs generator output
-    // (e.g., "every rule_set in intent.directSet.ruleSets appears in some
-    // route rule with outbound=direct").
-    void intent;
-
     const issues: string[] = [];
 
     // -- 1. top-level blocks --------------------------------------------
@@ -237,9 +237,58 @@ export function validate(
     if (rules[2]?.protocol !== 'quic' || rules[2]?.action !== 'reject') {
         issues.push('route.rules[2] must be {"protocol":"quic","action":"reject"}');
     }
-    if (rules[3]?.ip_is_private !== true || rules[3]?.outbound !== 'direct') {
+    // `-rules` variants resolve at index 3, pushing the LAN guard to 4. That
+    // rule is scoped twice, and both scopes are what keep it safe:
+    //   - inbound = mixed, so the TUN datapath is untouched (there the client
+    //     already resolved through our hijacked DNS, and resolving again would
+    //     hand the egress an IP instead of the hostname);
+    //   - inverted against the known-overseas set, so those domains keep their
+    //     FQDN all the way to the egress.
+    const expectsResolve = isRulesVariant;
+    if (expectsResolve) {
+        const resolveRule = rules[3];
+        if (resolveRule?.action !== 'resolve') {
+            issues.push(
+                `${variant}: route.rules[3] must be a resolve — without it a host arriving on the ` +
+                    `mixed inbound stays a domain, so no IP rule can match and an in-region host ` +
+                    `nobody listed falls through to route.final and gets proxied`,
+            );
+        } else {
+            const foreignTag = intent.proxySet.foreignDomainRuleSet;
+            const clauses: any[] = Array.isArray(resolveRule.rules) ? resolveRule.rules : [];
+            const scopedToMixed = clauses.some(
+                (c) => Array.isArray(c?.inbound) && c.inbound.includes(CONTRACT_INBOUND_TAGS.MIXED),
+            );
+            const skipsForeign = clauses.some(
+                (c) => c?.invert === true && c?.rule_set?.includes?.(foreignTag),
+            );
+            if (resolveRule.type !== 'logical' || resolveRule.mode !== 'and' || !scopedToMixed) {
+                issues.push(
+                    `${variant}: route.rules[3] resolve must be a logical AND scoped to inbound ` +
+                        `"${CONTRACT_INBOUND_TAGS.MIXED}" — resolving the TUN datapath would ` +
+                        `undo fakeip and hand the egress an IP instead of the hostname`,
+                );
+            }
+            if (!skipsForeign) {
+                issues.push(
+                    `${variant}: route.rules[3] resolve must carry an inverted "${foreignTag}" ` +
+                        `clause — otherwise known-overseas domains get resolved here and the ` +
+                        `egress receives an IP instead of the hostname`,
+                );
+            }
+        }
+    } else if (rules.some((r) => r?.action === 'resolve')) {
         issues.push(
-            'route.rules[3] must be {"ip_is_private":true,"outbound":"direct"} — LAN guard, must come before tag anchors',
+            `${variant}: must NOT carry a route-level resolve. It would fill ` +
+                `DestinationAddresses, and sing-box then dials proxied connections by IP, so the ` +
+                `egress never resolves the hostname itself`,
+        );
+    }
+    const lanGuardIdx = expectsResolve ? 4 : 3;
+    if (rules[lanGuardIdx]?.ip_is_private !== true || rules[lanGuardIdx]?.outbound !== 'direct') {
+        issues.push(
+            `route.rules[${lanGuardIdx}] must be {"ip_is_private":true,"outbound":"direct"} — ` +
+                `LAN guard, must come before tag anchors`,
         );
     }
 
@@ -280,7 +329,15 @@ export function validate(
 
         // Tag anchors must come before any rule that uses rule_set, so
         // user overrides take priority over built-in geosite matching.
-        const firstRuleSetIdx = rules.findIndex((r) => Array.isArray(r?.rule_set));
+        //
+        // Only rules that actually decide routing count: the contract is about
+        // which outbound wins. A non-final action (the inverted `resolve`) may
+        // reference a rule_set earlier without taking that decision away from
+        // a user's custom rule — whatever it resolves or skips, the anchors
+        // still match first when the outbound is picked.
+        const decidesRoute = (r: any) =>
+            typeof r?.outbound === 'string' || r?.action === 'route' || r?.action === 'reject';
+        const firstRuleSetIdx = rules.findIndex((r) => Array.isArray(r?.rule_set) && decidesRoute(r));
         if (firstRuleSetIdx >= 0) {
             if (idxReject >= 0 && idxReject > firstRuleSetIdx) {
                 issues.push(
@@ -302,16 +359,15 @@ export function validate(
             }
         }
 
-        // Also require anchors to come AFTER the LAN guard (position 3)
-        // so private-IP traffic can never be tunneled even via custom proxy rules.
-        if (idxReject >= 0 && idxReject < 4) {
-            issues.push(`${variant}: tag anchor "${tagReject}" at index ${idxReject} must come after LAN guard at index 3`);
-        }
-        if (idxDirect >= 0 && idxDirect < 4) {
-            issues.push(`${variant}: tag anchor "${tagDirect}" at index ${idxDirect} must come after LAN guard at index 3`);
-        }
-        if (idxProxy >= 0 && idxProxy < 4) {
-            issues.push(`${variant}: tag anchor "${tagProxy}" at index ${idxProxy} must come after LAN guard at index 3`);
+        // Also require anchors to come AFTER the LAN guard so private-IP
+        // traffic can never be tunneled even via custom proxy rules.
+        for (const [tag, idx] of [[tagReject, idxReject], [tagDirect, idxDirect], [tagProxy, idxProxy]] as [string, number][]) {
+            if (idx >= 0 && idx <= lanGuardIdx) {
+                issues.push(
+                    `${variant}: tag anchor "${tag}" at index ${idx} must come after ` +
+                        `LAN guard at index ${lanGuardIdx}`,
+                );
+            }
         }
     }
 
@@ -369,6 +425,93 @@ export function validate(
                             `(fakeip or dns_proxy fallthrough), not via direct DNS.`,
                     );
                 }
+            }
+        }
+    }
+
+    // -- 10. In-region address filter (rules variants only) -------------
+    // The rule that makes "unlisted domain, but it resolves into the region"
+    // go direct without a route-level `resolve` action. Two properties are
+    // load-bearing and easy to break by accident:
+    //   - no `query_type`: DNS rules carrying one are skipped on the
+    //     internal-lookup path, which kills the filter silently;
+    //   - position: AFTER the direct set (listed domains adopt `system`
+    //     unconditionally, filter or not) and BEFORE the fakeip catchall
+    //     (which would otherwise answer first and never fall back).
+    if (isRulesVariant) {
+        const dnsRules = (dns.rules ?? []) as any[];
+        const filterIdx = dnsRules.findIndex((r) => r?.ip_is_private === true);
+        if (filterIdx < 0) {
+            issues.push(
+                `${variant}: dns.rules is missing the in-region address filter ` +
+                    `({"rule_set":[<ipRuleSet>],"ip_is_private":true,"server":"${CONTRACT_DNS_TAGS.SYSTEM}"}). ` +
+                    `Without it a domain that resolves into the region is proxied instead of direct.`,
+            );
+        } else {
+            const filterRule = dnsRules[filterIdx];
+            if (filterRule.server !== CONTRACT_DNS_TAGS.SYSTEM) {
+                issues.push(
+                    `${variant}: address filter must resolve via "${CONTRACT_DNS_TAGS.SYSTEM}", ` +
+                        `got "${filterRule.server}"`,
+                );
+            }
+            if (filterRule.query_type !== undefined) {
+                issues.push(
+                    `${variant}: address filter must NOT carry query_type — sing-box skips such ` +
+                        `rules on the internal-lookup path, so the filter would never run`,
+                );
+            }
+            if (!Array.isArray(filterRule.rule_set) || filterRule.rule_set.length === 0) {
+                issues.push(`${variant}: address filter must reference the in-region IP rule_set`);
+            }
+            const directSetIdx = dnsRules.findIndex(
+                (r) => Array.isArray(r?.domain) && r?.server === CONTRACT_DNS_TAGS.SYSTEM,
+            );
+            if (directSetIdx >= 0 && filterIdx < directSetIdx) {
+                issues.push(
+                    `${variant}: address filter at index ${filterIdx} must come AFTER the direct ` +
+                        `set rule at index ${directSetIdx} — listed domains resolve via ` +
+                        `"${CONTRACT_DNS_TAGS.SYSTEM}" unconditionally`,
+                );
+            }
+            // The known-overseas short-circuit has to sit BEFORE the filter,
+            // or foreign domains still get probed at the in-region resolver —
+            // which is the pollution exposure the short-circuit removes.
+            const foreignTag = intent.proxySet.foreignDomainRuleSet;
+            const foreignIdx = dnsRules.findIndex(
+                (r) => Array.isArray(r?.rule_set) && r.rule_set.includes(foreignTag),
+            );
+            if (foreignIdx < 0) {
+                issues.push(
+                    `${variant}: dns.rules must short-circuit "${foreignTag}" to the proxy-side ` +
+                        `resolver, otherwise every foreign domain is asked at ` +
+                        `"${CONTRACT_DNS_TAGS.SYSTEM}" first and a poisoned in-region answer ` +
+                        `would be adopted`,
+                );
+            } else {
+                if (dnsRules[foreignIdx]?.server === CONTRACT_DNS_TAGS.SYSTEM) {
+                    issues.push(
+                        `${variant}: "${foreignTag}" must NOT resolve via ` +
+                            `"${CONTRACT_DNS_TAGS.SYSTEM}" — it is the known-overseas set`,
+                    );
+                }
+                if (foreignIdx > filterIdx) {
+                    issues.push(
+                        `${variant}: "${foreignTag}" short-circuit at index ${foreignIdx} must ` +
+                            `come before the address filter at index ${filterIdx}`,
+                    );
+                }
+            }
+
+            const fakeipIdx = dnsRules.findIndex(
+                (r) => r?.server === CONTRACT_DNS_TAGS.FAKEIP && r?.query_type !== undefined,
+            );
+            if (fakeipIdx >= 0 && filterIdx > fakeipIdx) {
+                issues.push(
+                    `${variant}: address filter at index ${filterIdx} must come BEFORE the fakeip ` +
+                        `catchall at index ${fakeipIdx}, or every unlisted domain gets a fake IP ` +
+                        `before the filter can adopt a real one`,
+                );
             }
         }
     }
