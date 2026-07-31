@@ -104,7 +104,7 @@ export const ZH_CN_INTENT: RegionIntent = {
         // Known-overseas domains. DNS-side short-circuit so they are never
         // asked at DNSPod CN — a poisoned answer landing inside geoip-cn
         // would otherwise be adopted and the domain routed direct.
-        foreignDomainRuleSet: 'geosite-geolocation-!cn',
+        foreignDomainRuleSet: 'geosite-not-cn',
     },
 
     // --- rule_set registry -------------------------------------------------
@@ -135,12 +135,26 @@ export const ZH_CN_INTENT: RegionIntent = {
             format: 'binary',
             url: 'https://jsdelivr.oneoh.cloud/gh/SagerNet/sing-geosite@rule-set/geosite-linkedin@cn.srs',
         },
+        // Kept exactly as it shipped — same tag, same format. sing-box caches
+        // rule-sets by tag alone and parses the cached bytes with whatever
+        // format the config currently declares, so flipping this entry to
+        // binary made every client with a warm cache die at startup with
+        // "restore cached rule-set: invalid sing-box rule-set file". A format
+        // change needs a NEW tag; see `geosite-not-cn` below.
         {
             tag: 'geosite-geolocation-!cn',
             type: 'remote',
+            format: 'source',
+            url: 'https://jsdelivr.oneoh.cloud/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/geolocation-!cn.json',
+        },
+        // The binary build of the same upstream list, under a new tag so it
+        // gets its own cache key. This is the one the rules reference; the
+        // entry above stays for the transition and can be dropped once no
+        // deployed client still carries its cache.
+        {
+            tag: 'geosite-not-cn',
+            type: 'remote',
             format: 'binary',
-            // binary, not the source JSON: this set is now load-bearing (it
-            // gates the DNS address filter), and .srs is 164K against 688K.
             url: 'https://jsdelivr.oneoh.cloud/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/geolocation-!cn.srs',
         },
         {

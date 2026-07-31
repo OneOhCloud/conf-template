@@ -246,6 +246,11 @@ releases and runs the same check on every emitted file.
 
 - ❌ Hand-editing `conf/**/*.jsonc`. They're generator output. Your
   edits are deleted on next `pnpm generate`.
+- ❌ Changing a `ruleSetDefinitions` entry's `format` under the same tag.
+  Rule-sets are cached by tag and parsed with the currently declared
+  format, so every deployed client with a warm cache fails to start
+  (`restore cached rule-set: invalid sing-box rule-set file`). Add a new
+  tag instead and retire the old entry later.
 - ❌ Adding tag names / anchor domains / reserved ports as intent fields.
   Those are contracts, not region data — they go in `CONTRACT_*`.
 - ❌ Introducing variant-specific logic via per-variant intent fields.

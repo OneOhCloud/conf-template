@@ -76,7 +76,7 @@
             },
             {
                 "rule_set": [
-                    "geosite-geolocation-!cn"
+                    "geosite-not-cn"
                 ],
                 "server": "remote"
             },
@@ -180,7 +180,7 @@
                     },
                     {
                         "rule_set": [
-                            "geosite-geolocation-!cn"
+                            "geosite-not-cn"
                         ],
                         "invert": true
                     }
@@ -303,6 +303,12 @@
             },
             {
                 "tag": "geosite-geolocation-!cn",
+                "type": "remote",
+                "format": "source",
+                "url": "https://jsdelivr.oneoh.cloud/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/geolocation-!cn.json"
+            },
+            {
+                "tag": "geosite-not-cn",
                 "type": "remote",
                 "format": "binary",
                 "url": "https://jsdelivr.oneoh.cloud/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/geolocation-!cn.srs"

@@ -194,6 +194,12 @@
             {
                 "tag": "geosite-geolocation-!cn",
                 "type": "remote",
+                "format": "source",
+                "url": "https://jsdelivr.oneoh.cloud/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/geolocation-!cn.json"
+            },
+            {
+                "tag": "geosite-not-cn",
+                "type": "remote",
                 "format": "binary",
                 "url": "https://jsdelivr.oneoh.cloud/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/geolocation-!cn.srs"
             },

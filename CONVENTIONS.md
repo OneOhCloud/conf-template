@@ -226,6 +226,23 @@ The generator emits this verbatim into every variant's `route.rule_set`
 block. Adding a new entry without a corresponding reference, or
 referencing a tag without an entry here, trips the validator.
 
+**Never change an existing entry's `format` under the same tag.** sing-box
+caches rule-sets by tag alone (`CacheFile.LoadRuleSet(tag)`) and parses the
+cached bytes with whatever format the config currently declares, so every
+already-deployed client with a warm cache dies at startup:
+
+```
+FATAL start service: initialize rule-set[N]: restore cached rule-set:
+      invalid sing-box rule-set file
+```
+
+Changing the `url` while keeping the format is fine — the cached bytes still
+parse, and the set refreshes on its next update. To move a set to another
+format, add it under a **new tag**, point the references at the new tag, and
+leave the old entry in place until no deployed client still carries its
+cache. `geosite-geolocation-!cn` (source) → `geosite-not-cn` (binary) is
+exactly that transition.
+
 ## The generator layer (`scripts/convention/generator/*.ts`)
 
 Currently a single file, `sing-box-v1-13-8.ts`, targeting sing-box 1.12+
