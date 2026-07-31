@@ -108,7 +108,7 @@ function buildOutbounds(): unknown[] {
         {
             tag: CONTRACT_OUTBOUND_TAGS.AUTO,
             type: 'urltest',
-            url: 'https://www.google.com/generate_204',
+            url: 'http://www.gstatic.com/generate_204',
             outbounds: [] as string[],
         },
     ];
