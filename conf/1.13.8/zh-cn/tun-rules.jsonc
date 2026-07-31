@@ -85,6 +85,7 @@
                     "geoip-cn"
                 ],
                 "ip_is_private": true,
+                "rule_set_ip_cidr_accept_empty": true,
                 "strategy": "prefer_ipv4",
                 "server": "system"
             },

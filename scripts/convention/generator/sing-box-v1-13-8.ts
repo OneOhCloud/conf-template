@@ -300,6 +300,12 @@ function buildDnsRules(
         rules.push({
             rule_set: [intent.directSet.ipRuleSet],
             ip_is_private: true,
+            // Domains with no AAAA answer NODATA. An empty address set has
+            // nothing for the filter to test, so without this the rule is
+            // judged non-matching and the query falls through to fakeip —
+            // a China-hosted domain then leaves over the proxy on its v6
+            // fake address. Deprecated upstream, removal slated for 1.16.0.
+            rule_set_ip_cidr_accept_empty: true,
             strategy: 'prefer_ipv4',
             server: CONTRACT_DNS_TAGS.SYSTEM,
         });
