@@ -18,14 +18,15 @@ that pulls them off the CDN). Before you edit anything, read this file.
 3. **Every run is validated.** Static checks (reference integrity,
     forbidden legacy fields, required preamble, **DNS/route consistency**,
     **tag anchor priority**, **in-region address filter**) + `sing-box
-    check` (under `--strict` /
-    `SING_BOX_BIN`) both run before any file is written. A failure
+    check` (under `--strict`, `SING_BOX_BIN`, or a per-bucket
+    `SING_BOX_BIN_<version>`) both run before any file is written. A failure
     aborts the run and touches nothing.
 
 4. **Intent is version-agnostic; generator is version-specific.** Each
     `conf/<bucket>/` folder owns exactly one generator file of the same
     name — `sing-box-v1-12.ts`, `sing-box-v1-13.ts`, `sing-box-v1-13-8.ts`
-    — and `GENERATORS` in `scripts/generate.ts` dispatches by version.
+    — plus `sing-box-v1-14.ts` for the 1.14 response-matching syntax, and
+    `GENERATORS` in `scripts/generate.ts` dispatches by version.
     Never point two buckets at one generator, even when their output is
     currently identical: the bucket exists so the next breaking change
     touches only the lineage that needs it. Intent files stay untouched.
@@ -75,9 +76,11 @@ conf-template/
 │       ├── generator/
 │       │   ├── sing-box-v1-12.ts            # one generator per conf/<bucket>/, name in lockstep
 │       │   ├── sing-box-v1-13.ts
-│       │   └── sing-box-v1-13-8.ts
+│       │   ├── sing-box-v1-13-8.ts
+│       │   └── sing-box-v1-14.ts
 │       └── validator.ts                     # static rules + DNS/route consistency + tag anchor priority
 ├── conf/
+│   ├── 1.14/<region>/*.jsonc                # AUTO-GENERATED — do not edit
 │   ├── 1.13.8/<region>/*.jsonc              # AUTO-GENERATED — do not edit
 │   ├── 1.13/<region>/*.jsonc                # AUTO-GENERATED — do not edit
 │   └── 1.12/<region>/*.jsonc                # AUTO-GENERATED — do not edit
@@ -94,7 +97,9 @@ pnpm install
 pnpm generate
 
 # full check with sing-box check on every file
-SING_BOX_BIN=/path/to/sing-box pnpm generate:strict
+SING_BOX_BIN=/path/to/1.13.8/sing-box \
+SING_BOX_BIN_1_14=/path/to/1.14.0-beta.10/sing-box \
+pnpm generate:strict
 
 # dry run — validate only, don't write
 pnpm check
@@ -128,7 +133,7 @@ The contracts:
 | `CONTRACT_TAG_ANCHORS.DIRECT_DOMAIN` | `direct-tag.oneoh.cloud` | user custom direct rules get injected into the route rule containing this domain |
 | `CONTRACT_TAG_ANCHORS.PROXY_DOMAIN` | `proxy-tag.oneoh.cloud` | user custom proxy rules ditto |
 | `CONTRACT_MIXED_LISTEN_PORT` | `6789` | hardcoded in TUN `platform.http_proxy` AND in OneBox's system-proxy config |
-| `CONTRACT_FAKEIP_RANGES` | `198.18.0.0/15` / `fc00::/18` | RFC-reserved, sing-box recognises these as "fake"; changing them would break the DNS cache |
+| `CONTRACT_FAKEIP_RANGES` | `198.18.0.0/15` / `2001:2::/48` | RFC-reserved, sing-box recognises these as "fake"; changing them would break the DNS cache |
 
 **Editing contracts is a multi-repo break.** You have to change the same
 strings in OneBox's runtime merger (`src/config/merger/main.ts`,
@@ -245,8 +250,10 @@ exactly that transition.
 
 ## The generator layer (`scripts/convention/generator/*.ts`)
 
-Currently a single file, `sing-box-v1-13-8.ts`, targeting sing-box 1.12+
-syntax. It exports `build(intent, variant) → SingBoxConfig`.
+Each bucket has an independent generator. `sing-box-v1-14.ts` forks DNS
+generation to use `evaluate` plus explicit response matching; older buckets
+retain their accepted legacy syntax. Every generator exports
+`build(intent, variant) → SingBoxConfig`.
 
 ### What it knows (variant-specific logic)
 
@@ -372,8 +379,8 @@ stable/beta/dev or PR touching `conf/`, `scripts/`, or the workflow
 itself. It:
 
 1. Installs deps with `pnpm install --frozen-lockfile`
-2. Downloads sing-box v1.13.8 linux-amd64 binary from GitHub releases
-3. Runs `pnpm generate:strict` (with `SING_BOX_BIN` set)
+2. Downloads sing-box v1.13.8 and v1.14.0-beta.10 linux-amd64 binaries
+3. Runs `pnpm generate:strict` with the legacy fallback and 1.14 override
 4. Runs `git diff --exit-code` to verify no drift between committed and
    generated files
 
@@ -385,11 +392,11 @@ Drift detection catches three failure modes:
 - Someone modified `generator/*.ts` without committing the regenerated
   output (same)
 
-## Known limitation: version-specific sing-box check
+## Known limitation: legacy bucket validation
 
-CI downloads a single sing-box binary (1.13.8) and runs it against every
-generated file. This proves every output is accepted by the 1.13.8
-parser, but NOT that `conf/1.12/` outputs are accepted by a real 1.12
+CI uses sing-box 1.14.0-beta.10 for `conf/1.14/` and 1.13.8 for every
+legacy bucket. This proves the new output is accepted by the exact target
+prerelease, but does not prove `conf/1.12/` is accepted by a real 1.12
 parser.
 
 For us this is fine because:
@@ -401,6 +408,6 @@ For us this is fine because:
   older OneBox builds stuck on those kernels — those builds already
   have their own validated binaries.
 
-If the risk ever materializes (some 1.12 regression surfaces), add a
-second `SING_BOX_BIN_1_12=...` env var and run `generate:strict` a
-second time with it pointing at the 1.12 binary.
+If that risk materializes, set `SING_BOX_BIN_1_12` to a pinned 1.12
+binary. The generator already resolves per-bucket overrides before the
+legacy `SING_BOX_BIN` fallback.

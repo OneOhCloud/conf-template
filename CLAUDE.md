@@ -59,8 +59,9 @@ Generator files are **1:1 with `conf/<bucket>/` folders** — the bucket's
 existence is the signal that some breaking change warranted its own
 lineage, so it owns its own generator even if, at fork time, the output
 is byte-identical to the previous bucket's. Today that means
-`sing-box-v1-12.ts` for `1.12`, `sing-box-v1-13.ts` for `1.13`, and
-`sing-box-v1-13-8.ts` for `1.13.8`. Filenames mirror folder names —
+`sing-box-v1-12.ts` for `1.12`, `sing-box-v1-13.ts` for `1.13`,
+`sing-box-v1-13-8.ts` for `1.13.8`, and `sing-box-v1-14.ts` for `1.14`.
+Filenames mirror folder names —
 `sing-box-v<bucket>.ts`. Never point two buckets at the same generator;
 if you're tempted to, you probably don't need the new bucket. Intent
 files stay untouched — region data doesn't know or care about sing-box
@@ -167,15 +168,15 @@ where someone manually re-introduces them.
 Every `dns.final` / `route.final` must name an existing server /
 outbound. Catches typos before sing-box sees the config.
 
-**(g) In-region address filter.** Every `-rules` variant's `dns.rules`
-must carry `{rule_set: [<ipRuleSet>], ip_is_private: true, server:
-system}` between the direct set rule and the fakeip catchall, and that
-rule must NOT carry `query_type`. It is what makes an *unlisted* domain
-that resolves into the region route direct: sing-box asks `system` first
-and adopts the answer only if it lands in the region or on a private
-address, otherwise the rule is skipped and the query falls through to
-fakeip / `dns.final`. A `query_type` on it would make sing-box skip it on
-the internal-lookup path, killing the filter silently.
+**(g) In-region address filter.** Every `-rules` variant must probe the
+`system` resolver between the direct set rule and the fakeip catchall.
+Legacy buckets express that probe as one DNS rule with
+`rule_set: [<ipRuleSet>]`, `ip_is_private: true`, and no `query_type`.
+The `1.14` bucket expresses the same behavior with an `evaluate` rule,
+followed by two `match_response` / `respond` rules: accept in-region or
+private answers, then accept an empty response. This is what makes an
+*unlisted* domain that resolves into the region route direct while foreign
+answers fall through to fakeip / `dns.final`.
 
 The known-overseas short-circuit (`proxySet.foreignDomainRuleSet` →
 proxy-side resolver) must come before it, or a poisoned CN answer for a
@@ -223,9 +224,10 @@ placeholders (downstream runtimes fill these in), writes the patched
 copy to a temp file, runs check, and deletes the temp. The real on-disk
 file is never modified during check.
 
-`SING_BOX_BIN=/path/to/sing-box pnpm generate:strict` runs this locally.
-CI downloads a pinned 1.13.8 Linux binary from the sing-box GitHub
-releases and runs the same check on every emitted file.
+`SING_BOX_BIN=/path/to/1.13.8/sing-box \
+SING_BOX_BIN_1_14=/path/to/1.14.0-beta.10/sing-box pnpm generate:strict`
+runs this locally. CI pins those two versions and selects the matching
+binary for each emitted bucket.
 
 ## When to Edit Which Layer
 

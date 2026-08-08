@@ -19,15 +19,14 @@
  *      user-custom-rules (merged at runtime into the anchor rules) lose
  *      priority to the built-in geosite rules.
  *
- *   3. In-region address filter. For every `-rules` variant, dns.rules must
- *      carry the `ip_is_private` + in-region rule_set filter, without a
- *      `query_type`, sitting between the direct set and the fakeip catchall.
- *      That rule is what lets an unlisted domain resolving into the region
- *      route direct while every other domain still reaches the proxy as a
- *      domain rather than an IP.
+ *   3. In-region address filter. Every `-rules` variant probes the system
+ *      resolver between the direct set and fakeip catchall. Legacy buckets
+ *      use the address-filter rule; 1.14 uses evaluate + match_response.
+ *      Both forms let an unlisted domain resolving into the region route
+ *      direct while other domains still reach the proxy as domain names.
  */
 
-import type { RegionIntent, SingBoxConfig, Variant } from './types';
+import type { RegionIntent, SingBoxConfig, Variant, Version } from './types';
 import {
     CONTRACT_DNS_TAGS,
     CONTRACT_INBOUND_TAGS,
@@ -47,6 +46,7 @@ export class ValidationError extends Error {
 
 export function validate(
     config: SingBoxConfig,
+    version: Version,
     variant: Variant,
     intent: RegionIntent,
     fileLabel: string,
@@ -208,6 +208,24 @@ export function validate(
                     `rejected by sing-box 1.13.8; use a route rule \`{"action":"sniff"}\``,
             );
         }
+    }
+
+    if (version === '1.14') {
+        const walkDNSRules = (rulesToWalk: any[]): void => {
+            for (const rule of rulesToWalk) {
+                if (rule?.strategy !== undefined) {
+                    issues.push(`${variant}: sing-box 1.14 DNS rules must not use legacy strategy`);
+                }
+                if (rule?.rule_set_ip_cidr_accept_empty !== undefined) {
+                    issues.push(
+                        `${variant}: sing-box 1.14 DNS rules must not use ` +
+                            `rule_set_ip_cidr_accept_empty`,
+                    );
+                }
+                if (Array.isArray(rule?.rules)) walkDNSRules(rule.rules);
+            }
+        };
+        walkDNSRules((dns.rules ?? []) as any[]);
     }
 
     // -- 6. Variant structural requirements -----------------------------
@@ -389,9 +407,13 @@ export function validate(
         }
 
         const dnsRuleSetServers = new Map<string, Set<string>>();
+        const responseMatchedRuleSets = new Set<string>();
         for (const rule of (dns.rules ?? []) as any[]) {
             const server: string | undefined = rule?.server;
             const rs: string[] = Array.isArray(rule?.rule_set) ? rule.rule_set : [];
+            if (rule?.match_response === true) {
+                for (const tag of rs) responseMatchedRuleSets.add(tag);
+            }
             if (!server || rs.length === 0) continue;
             for (const tag of rs) {
                 if (!dnsRuleSetServers.has(tag)) dnsRuleSetServers.set(tag, new Set());
@@ -402,6 +424,13 @@ export function validate(
         // Direct in route ⇒ system in dns
         for (const [tag, obSet] of routeRuleSetOutbounds) {
             if (obSet.has('direct')) {
+                if (
+                    version === '1.14' &&
+                    tag === intent.directSet.ipRuleSet &&
+                    responseMatchedRuleSets.has(tag)
+                ) {
+                    continue;
+                }
                 const dnsServers = dnsRuleSetServers.get(tag);
                 if (!dnsServers || !dnsServers.has('system')) {
                     issues.push(
@@ -430,87 +459,130 @@ export function validate(
     }
 
     // -- 10. In-region address filter (rules variants only) -------------
-    // The rule that makes "unlisted domain, but it resolves into the region"
-    // go direct without a route-level `resolve` action. Two properties are
-    // load-bearing and easy to break by accident:
-    //   - no `query_type`: DNS rules carrying one are skipped on the
-    //     internal-lookup path, which kills the filter silently;
-    //   - position: AFTER the direct set (listed domains adopt `system`
-    //     unconditionally, filter or not) and BEFORE the fakeip catchall
-    //     (which would otherwise answer first and never fall back).
+    // 1.12/1.13 use the legacy route+address-filter form. 1.14 explicitly
+    // evaluates system DNS and binds response-matching respond actions.
     if (isRulesVariant) {
         const dnsRules = (dns.rules ?? []) as any[];
-        const filterIdx = dnsRules.findIndex((r) => r?.ip_is_private === true);
-        if (filterIdx < 0) {
-            issues.push(
-                `${variant}: dns.rules is missing the in-region address filter ` +
-                    `({"rule_set":[<ipRuleSet>],"ip_is_private":true,"server":"${CONTRACT_DNS_TAGS.SYSTEM}"}). ` +
-                    `Without it a domain that resolves into the region is proxied instead of direct.`,
+        const directSetIdx = dnsRules.findIndex(
+            (rule) => Array.isArray(rule?.domain) && rule?.server === CONTRACT_DNS_TAGS.SYSTEM,
+        );
+        const foreignTag = intent.proxySet.foreignDomainRuleSet;
+        const foreignIdx = dnsRules.findIndex(
+            (rule) => Array.isArray(rule?.rule_set) && rule.rule_set.includes(foreignTag),
+        );
+        const fakeipIdx = dnsRules.findIndex(
+            (rule) => rule?.server === CONTRACT_DNS_TAGS.FAKEIP && rule?.query_type !== undefined,
+        );
+
+        let probeStartIdx = -1;
+        let probeEndIdx = -1;
+
+        if (version === '1.14') {
+            const evaluateIdx = dnsRules.findIndex(
+                (rule) =>
+                    rule?.action === 'evaluate' &&
+                    rule?.server === CONTRACT_DNS_TAGS.SYSTEM,
             );
-        } else {
-            const filterRule = dnsRules[filterIdx];
-            if (filterRule.server !== CONTRACT_DNS_TAGS.SYSTEM) {
+            if (evaluateIdx < 0) {
                 issues.push(
-                    `${variant}: address filter must resolve via "${CONTRACT_DNS_TAGS.SYSTEM}", ` +
-                        `got "${filterRule.server}"`,
-                );
-            }
-            if (filterRule.query_type !== undefined) {
-                issues.push(
-                    `${variant}: address filter must NOT carry query_type — sing-box skips such ` +
-                        `rules on the internal-lookup path, so the filter would never run`,
-                );
-            }
-            if (!Array.isArray(filterRule.rule_set) || filterRule.rule_set.length === 0) {
-                issues.push(`${variant}: address filter must reference the in-region IP rule_set`);
-            }
-            const directSetIdx = dnsRules.findIndex(
-                (r) => Array.isArray(r?.domain) && r?.server === CONTRACT_DNS_TAGS.SYSTEM,
-            );
-            if (directSetIdx >= 0 && filterIdx < directSetIdx) {
-                issues.push(
-                    `${variant}: address filter at index ${filterIdx} must come AFTER the direct ` +
-                        `set rule at index ${directSetIdx} — listed domains resolve via ` +
-                        `"${CONTRACT_DNS_TAGS.SYSTEM}" unconditionally`,
-                );
-            }
-            // The known-overseas short-circuit has to sit BEFORE the filter,
-            // or foreign domains still get probed at the in-region resolver —
-            // which is the pollution exposure the short-circuit removes.
-            const foreignTag = intent.proxySet.foreignDomainRuleSet;
-            const foreignIdx = dnsRules.findIndex(
-                (r) => Array.isArray(r?.rule_set) && r.rule_set.includes(foreignTag),
-            );
-            if (foreignIdx < 0) {
-                issues.push(
-                    `${variant}: dns.rules must short-circuit "${foreignTag}" to the proxy-side ` +
-                        `resolver, otherwise every foreign domain is asked at ` +
-                        `"${CONTRACT_DNS_TAGS.SYSTEM}" first and a poisoned in-region answer ` +
-                        `would be adopted`,
+                    `${variant}: sing-box 1.14 requires an evaluate action through ` +
+                        `"${CONTRACT_DNS_TAGS.SYSTEM}" before response matching`,
                 );
             } else {
-                if (dnsRules[foreignIdx]?.server === CONTRACT_DNS_TAGS.SYSTEM) {
+                probeStartIdx = evaluateIdx;
+                probeEndIdx = evaluateIdx + 2;
+                const evaluateRule = dnsRules[evaluateIdx];
+                const addressRule = dnsRules[evaluateIdx + 1];
+                const emptyRule = dnsRules[evaluateIdx + 2];
+
+                if (evaluateRule.tag !== undefined || evaluateRule.query_type !== undefined) {
                     issues.push(
-                        `${variant}: "${foreignTag}" must NOT resolve via ` +
-                            `"${CONTRACT_DNS_TAGS.SYSTEM}" — it is the known-overseas set`,
+                        `${variant}: anonymous evaluate rule must not carry tag/query_type`,
                     );
                 }
-                if (foreignIdx > filterIdx) {
+                if (
+                    addressRule?.match_response !== true ||
+                    addressRule?.action !== 'respond' ||
+                    addressRule?.ip_is_private !== true ||
+                    !Array.isArray(addressRule?.rule_set) ||
+                    !addressRule.rule_set.includes(intent.directSet.ipRuleSet)
+                ) {
                     issues.push(
-                        `${variant}: "${foreignTag}" short-circuit at index ${foreignIdx} must ` +
-                            `come before the address filter at index ${filterIdx}`,
+                        `${variant}: dns.rules[${evaluateIdx + 1}] must respond to the evaluated ` +
+                            `in-region/private response`,
+                    );
+                }
+                if (addressRule?.query_type !== undefined) {
+                    issues.push(`${variant}: response address filter must not carry query_type`);
+                }
+                if (
+                    emptyRule?.match_response !== true ||
+                    emptyRule?.action !== 'respond' ||
+                    emptyRule?.ip_accept_any !== true ||
+                    emptyRule?.invert !== true
+                ) {
+                    issues.push(
+                        `${variant}: dns.rules[${evaluateIdx + 2}] must respond to an empty ` +
+                            `evaluated address set`,
                     );
                 }
             }
-
-            const fakeipIdx = dnsRules.findIndex(
-                (r) => r?.server === CONTRACT_DNS_TAGS.FAKEIP && r?.query_type !== undefined,
-            );
-            if (fakeipIdx >= 0 && filterIdx > fakeipIdx) {
+        } else {
+            const filterIdx = dnsRules.findIndex((rule) => rule?.ip_is_private === true);
+            if (filterIdx < 0) {
                 issues.push(
-                    `${variant}: address filter at index ${filterIdx} must come BEFORE the fakeip ` +
-                        `catchall at index ${fakeipIdx}, or every unlisted domain gets a fake IP ` +
-                        `before the filter can adopt a real one`,
+                    `${variant}: dns.rules is missing the legacy in-region address filter`,
+                );
+            } else {
+                probeStartIdx = filterIdx;
+                probeEndIdx = filterIdx;
+                const filterRule = dnsRules[filterIdx];
+                if (filterRule.server !== CONTRACT_DNS_TAGS.SYSTEM) {
+                    issues.push(
+                        `${variant}: address filter must resolve via ` +
+                            `"${CONTRACT_DNS_TAGS.SYSTEM}"`,
+                    );
+                }
+                if (filterRule.query_type !== undefined) {
+                    issues.push(`${variant}: address filter must not carry query_type`);
+                }
+                if (
+                    !Array.isArray(filterRule.rule_set) ||
+                    !filterRule.rule_set.includes(intent.directSet.ipRuleSet)
+                ) {
+                    issues.push(`${variant}: address filter must reference the in-region IP rule_set`);
+                }
+            }
+        }
+
+        if (foreignIdx < 0) {
+            issues.push(
+                `${variant}: dns.rules must short-circuit "${foreignTag}" to the proxy-side resolver`,
+            );
+        } else if (dnsRules[foreignIdx]?.server === CONTRACT_DNS_TAGS.SYSTEM) {
+            issues.push(
+                `${variant}: "${foreignTag}" must not resolve via ` +
+                    `"${CONTRACT_DNS_TAGS.SYSTEM}"`,
+            );
+        }
+
+        if (probeStartIdx >= 0) {
+            if (directSetIdx >= 0 && probeStartIdx < directSetIdx) {
+                issues.push(
+                    `${variant}: address probe at index ${probeStartIdx} must come after ` +
+                        `the direct set at index ${directSetIdx}`,
+                );
+            }
+            if (foreignIdx >= 0 && foreignIdx > probeStartIdx) {
+                issues.push(
+                    `${variant}: "${foreignTag}" short-circuit at index ${foreignIdx} must ` +
+                        `come before the address probe at index ${probeStartIdx}`,
+                );
+            }
+            if (fakeipIdx >= 0 && probeEndIdx > fakeipIdx) {
+                issues.push(
+                    `${variant}: address response chain ending at ${probeEndIdx} must come ` +
+                        `before fakeip catchall at ${fakeipIdx}`,
                 );
             }
         }

@@ -111,7 +111,7 @@ export const CONTRACT_FAKEIP_RANGES = {
 // ===========================================================================
 
 export type Variant = 'tun-rules' | 'tun-global' | 'mixed-rules' | 'mixed-global';
-export type Version = '1.12' | '1.13' | '1.13.8';
+export type Version = '1.12' | '1.13' | '1.13.8' | '1.14';
 export type Region = 'zh-cn';
 
 export const VARIANTS: readonly Variant[] = [
@@ -121,7 +121,7 @@ export const VARIANTS: readonly Variant[] = [
     'mixed-global',
 ] as const;
 
-export const VERSIONS: readonly Version[] = ['1.13.8', '1.13', '1.12'] as const;
+export const VERSIONS: readonly Version[] = ['1.14', '1.13.8', '1.13', '1.12'] as const;
 
 export const REGIONS: readonly Region[] = ['zh-cn'] as const;
 

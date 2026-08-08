@@ -4,13 +4,12 @@
  *
  * Pipeline (per region × variant × version):
  *   1. Load `RegionIntent` from `scripts/convention/intent/<region>.ts`.
- *   2. Compile with a version-specific generator (currently all supported
- *      versions share `sing-box-v1-13-8.ts` — 1.12+ all accept its output).
+ *   2. Compile with the generator owned by that version bucket.
  *   3. Static validate (see `scripts/convention/validator.ts` — enforces
  *      ref integrity, required preamble, tag anchor priority, DNS/route
  *      consistency).
- *   4. Optionally run `sing-box check` on the emitted output (--strict or
- *      SING_BOX_BIN=...). Uses an in-memory patched copy to work around
+ *   4. Optionally run `sing-box check` on the emitted output (--strict,
+ *      SING_BOX_BIN, or a SING_BOX_BIN_<bucket> override). Uses an in-memory patched copy to work around
  *      the empty `auto.outbounds` placeholder OneBox fills at runtime.
  *   5. Write to `conf/<version>/<region>/<variant>.jsonc`.
  *
@@ -35,6 +34,7 @@ import { ZH_CN_INTENT } from './convention/intent/zh-cn.js';
 import { build as buildSingBoxV1_12 } from './convention/generator/sing-box-v1-12.js';
 import { build as buildSingBoxV1_13 } from './convention/generator/sing-box-v1-13.js';
 import { build as buildSingBoxV1_13_8 } from './convention/generator/sing-box-v1-13-8.js';
+import { build as buildSingBoxV1_14 } from './convention/generator/sing-box-v1-14.js';
 import { ValidationError, validate } from './convention/validator.js';
 import type { Region, RegionIntent, SingBoxConfig, Variant, Version } from './convention/types.js';
 import { REGIONS, VARIANTS, VERSIONS } from './convention/types.js';
@@ -47,7 +47,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..');
 
 const args = process.argv.slice(2);
-const STRICT = args.includes('--strict') || process.env.SING_BOX_BIN !== undefined;
+const STRICT =
+    args.includes('--strict') ||
+    Object.keys(process.env).some((name) => name === 'SING_BOX_BIN' || name.startsWith('SING_BOX_BIN_'));
 const DRY_RUN = args.includes('--dry-run');
 
 /** Region → intent registry. Add new regions by dropping an entry here. */
@@ -78,6 +80,7 @@ const INTENTS: Record<Region, RegionIntent> = {
  * you probably don't need the new bucket at all.
  */
 const GENERATORS: Record<Version, (intent: RegionIntent, variant: Variant) => SingBoxConfig> = {
+    '1.14': buildSingBoxV1_14,
     '1.13.8': buildSingBoxV1_13_8,
     '1.13': buildSingBoxV1_13,
     '1.12': buildSingBoxV1_12,
@@ -113,12 +116,19 @@ function emit(version: Version, region: Region, variant: Variant, config: SingBo
 // sing-box check (optional, --strict)
 // ---------------------------------------------------------------------------
 
-function findSingBoxBin(): string | null {
+function singBoxBinEnvironmentName(version: Version): string {
+    return `SING_BOX_BIN_${version.replaceAll('.', '_')}`;
+}
+
+function findSingBoxBin(version: Version): string | null {
+    const versionSpecificBinary = process.env[singBoxBinEnvironmentName(version)];
+    if (versionSpecificBinary) return versionSpecificBinary;
     if (process.env.SING_BOX_BIN) return process.env.SING_BOX_BIN;
     try {
         const out = execFileSync('which', ['sing-box'], {
             encoding: 'utf-8',
             stdio: ['ignore', 'pipe', 'ignore'],
+            timeout: 5_000,
         });
         const p = out.trim();
         return p.length > 0 ? p : null;
@@ -147,7 +157,10 @@ function singBoxCheck(bin: string, config: SingBoxConfig, label: string): void {
     const tmpFile = join(tmp, 'config.json');
     writeFileSync(tmpFile, JSON.stringify(patched), 'utf-8');
     try {
-        execFileSync(bin, ['check', '-c', tmpFile], { stdio: ['ignore', 'pipe', 'pipe'] });
+        execFileSync(bin, ['check', '-c', tmpFile], {
+            stdio: ['ignore', 'pipe', 'pipe'],
+            timeout: 30_000,
+        });
     } catch (e: any) {
         const stderr = e?.stderr?.toString() ?? '';
         const stdout = e?.stdout?.toString() ?? '';
@@ -190,7 +203,7 @@ function main(): void {
                 const builder = GENERATORS[version];
                 const config = builder(intent, variant);
                 const label = `${version}/${region}/${variant}`;
-                validate(config, variant, intent, label);
+                validate(config, version, variant, intent, label);
                 const content = emit(version, region, variant, config);
                 const path = outputPath(version, region, variant);
                 generated.push({ version, region, variant, path, content, config });
@@ -202,19 +215,19 @@ function main(): void {
     // Phase 2: optional `sing-box check` on each (runs against in-memory
     // patched copies, not the on-disk files).
     if (STRICT) {
-        const bin = findSingBoxBin();
-        if (!bin) {
-            console.error(
-                `\n[generate] --strict requested but no sing-box binary found. ` +
-                    `Set SING_BOX_BIN=/path or add sing-box to PATH.`,
-            );
-            process.exit(2);
-        }
-        console.log(`\n[generate] running sing-box check via ${bin}`);
+        console.log('\n[generate] running version-aware sing-box checks');
         for (const g of generated) {
+            const bin = findSingBoxBin(g.version);
+            if (!bin) {
+                console.error(
+                    `\n[generate] --strict requested but no sing-box binary found for ${g.version}. ` +
+                        `Set ${singBoxBinEnvironmentName(g.version)}, SING_BOX_BIN, or add sing-box to PATH.`,
+                );
+                process.exit(2);
+            }
             const label = `${g.version}/${g.region}/${g.variant}`;
             singBoxCheck(bin, g.config, label);
-            console.log(`  ✓ sing-box check ${label}`);
+            console.log(`  ✓ sing-box check ${label} via ${bin}`);
         }
     }
 

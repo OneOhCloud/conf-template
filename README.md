@@ -35,7 +35,7 @@ the next `pnpm generate` run — edit intent instead.
 
 ## Matrix
 
-- **Versions**: `1.12`, `1.13`, `1.13.8`
+- **Versions**: `1.12`, `1.13`, `1.13.8`, `1.14` (verified with `v1.14.0-beta.10`)
 - **Regions**: `zh-cn`
 - **Variants**: `tun-rules`, `tun-global`, `mixed-rules`, `mixed-global`
 

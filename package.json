@@ -3,11 +3,12 @@
     "version": "0.0.0",
     "private": true,
     "type": "module",
-    "description": "sing-box config templates for OneBox. Hand-edit 1.13.8 only; generator syncs to other versions and validates.",
+    "description": "Versioned sing-box config templates for OneBox, generated from region intent and validated with matching kernels.",
     "scripts": {
         "generate": "tsx scripts/generate.ts",
         "generate:strict": "tsx scripts/generate.ts --strict",
-        "check": "tsx scripts/generate.ts --dry-run"
+        "check": "tsx scripts/generate.ts --dry-run",
+        "test": "tsx --test scripts/convention/generator/*.test.ts"
     },
     "devDependencies": {
         "@types/node": "^22.10.0",
