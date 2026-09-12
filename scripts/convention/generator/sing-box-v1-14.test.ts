@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 
 import { ZH_CN_INTENT } from '../intent/zh-cn.js';
 import { VARIANTS } from '../types.js';
+import { expectedResponseProbe, validate } from '../validator.js';
 import { build } from './sing-box-v1-14.js';
 
 function dnsRules(variant: (typeof VARIANTS)[number]): Record<string, unknown>[] {
@@ -17,6 +18,12 @@ function containsKey(value: unknown, key: string): boolean {
 }
 
 describe('sing-box 1.14 generator', () => {
+    it('passes the validator in every variant', () => {
+        for (const variant of VARIANTS) {
+            validate(build(ZH_CN_INTENT, variant), '1.14', variant, ZH_CN_INTENT, variant);
+        }
+    });
+
     it('removes legacy DNS rule fields from every variant', () => {
         for (const variant of VARIANTS) {
             const config = build(ZH_CN_INTENT, variant);
@@ -26,32 +33,29 @@ describe('sing-box 1.14 generator', () => {
         }
     });
 
-    it('uses evaluate and response matching for unlisted domains in rules variants', () => {
+    it('emits the specified response probe for unlisted domains in rules variants', () => {
+        const expected = expectedResponseProbe(ZH_CN_INTENT);
         for (const variant of ['tun-rules', 'mixed-rules'] as const) {
             const rules = dnsRules(variant);
             const evaluateIndex = rules.findIndex(
                 (rule) => rule.action === 'evaluate' && rule.server === 'system',
             );
             assert.notEqual(evaluateIndex, -1, `${variant}: evaluate rule`);
-
-            assert.deepEqual(rules[evaluateIndex + 1], {
-                match_response: true,
-                rule_set: [ZH_CN_INTENT.directSet.ipRuleSet],
-                ip_is_private: true,
-                action: 'respond',
-            });
-            assert.deepEqual(rules[evaluateIndex + 2], {
-                match_response: true,
-                ip_accept_any: true,
-                invert: true,
-                action: 'respond',
-            });
+            assert.deepEqual(rules.slice(evaluateIndex, evaluateIndex + expected.length), expected, variant);
 
             const foreignIndex = rules.findIndex(
                 (rule) => Array.isArray(rule.rule_set) &&
                     rule.rule_set.includes(ZH_CN_INTENT.proxySet.foreignDomainRuleSet),
             );
             assert.ok(foreignIndex < evaluateIndex, `${variant}: foreign domains short-circuit first`);
+        }
+    });
+
+    it('binds remote rule-set downloads to an explicit HTTP client detoured via ExitGateway', () => {
+        for (const variant of VARIANTS) {
+            const config = build(ZH_CN_INTENT, variant);
+            assert.deepEqual(config.http_clients, [{ tag: 'rule-set-download', detour: 'ExitGateway' }], variant);
+            assert.equal(config.route.default_http_client, 'rule-set-download', variant);
         }
     });
 });

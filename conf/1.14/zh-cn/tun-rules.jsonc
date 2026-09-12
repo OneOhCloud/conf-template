@@ -93,8 +93,23 @@
             },
             {
                 "match_response": true,
-                "ip_accept_any": true,
-                "invert": true,
+                "response_rcode": "NXDOMAIN",
+                "action": "respond"
+            },
+            {
+                "type": "logical",
+                "mode": "and",
+                "rules": [
+                    {
+                        "match_response": true,
+                        "response_rcode": "NOERROR"
+                    },
+                    {
+                        "match_response": true,
+                        "ip_accept_any": true,
+                        "invert": true
+                    }
+                ],
                 "action": "respond"
             },
             {
@@ -284,6 +299,7 @@
         "final": "ExitGateway",
         "default_domain_resolver": "system",
         "auto_detect_interface": true,
+        "default_http_client": "rule-set-download",
         "rule_set": [
             {
                 "tag": "geoip-cn",
@@ -388,6 +404,12 @@
             "type": "urltest",
             "url": "http://www.gstatic.com/generate_204",
             "outbounds": []
+        }
+    ],
+    "http_clients": [
+        {
+            "tag": "rule-set-download",
+            "detour": "ExitGateway"
         }
     ]
 }

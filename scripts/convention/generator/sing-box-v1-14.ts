@@ -1,6 +1,6 @@
 /**
  * sing-box config generator pinned to the `1.14` version bucket.
- * Verified against sing-box 1.14.0-beta.10 (`sing-box check`).
+ * Verified against sing-box 1.14.0 (`sing-box check`).
  *
  * Naming convention: one generator file per `conf/<bucket>/` folder,
  * name in lockstep with the folder. This bucket forks from `1.13.8`
@@ -16,7 +16,12 @@
  *     This uses the `network: "icmp"` route rule introduced in
  *     sing-box 1.13.0.
  *   + DNS address filtering uses `evaluate` followed by explicit
- *     `match_response` + `respond` rules.
+ *     `match_response` + `respond` rules. See `buildDnsRules` for why the
+ *     empty-response branch is a logical AND and never a bare `invert`.
+ *   + Remote rule-sets download through an explicit `http_clients` entry
+ *     bound via `route.default_http_client`. sing-box 1.14 deprecates the
+ *     implicit default client (removed in 1.16); `sing-box check` never
+ *     shows that WARN, only `run` does.
  *   - Per-rule legacy DNS `strategy` options and
  *     `rule_set_ip_cidr_accept_empty` are removed. The top-level DNS
  *     strategy remains the single source of address-family preference.
@@ -46,6 +51,8 @@
 
 import type {
     DirectSet,
+    DnsRule,
+    HttpClient,
     ProxySet,
     RegionIntent,
     SingBoxConfig,
@@ -225,8 +232,8 @@ function buildDnsServers(
 function buildDnsRules(
     intent: RegionIntent,
     opts: { hasFakeIp: boolean; isRules: boolean },
-): unknown[] {
-    const rules: unknown[] = [
+): DnsRule[] {
+    const rules: DnsRule[] = [
         // Universal: reject HTTPS / SVCB / PTR queries.
         //
         // Three independent reasons, all still valid in sing-box 1.13.8:
@@ -286,14 +293,28 @@ function buildDnsRules(
             server: opts.hasFakeIp ? CONTRACT_DNS_TAGS.FAKEIP : CONTRACT_DNS_TAGS.DNS_PROXY,
         });
         // Everything nobody listed: explicitly evaluate `system`, then adopt
-        // that response only when it is in-region/private or contains no IP
-        // answer. A public foreign response falls through to fakeip/dns_proxy,
-        // so the proxy still receives the domain instead of the probed IP.
+        // that response only when it is in-region/private, NXDOMAIN, or a
+        // NOERROR answer with no IP (NODATA / CNAME-only). A public foreign
+        // response falls through to fakeip/dns_proxy, so the proxy still
+        // receives the domain instead of the probed IP — and so does a
+        // failed probe: REFUSED / SERVFAIL / timeout reach `dns.final`
+        // exactly as the 1.13.8 legacy address filter let them.
         //
         // The in-region rule-set and `ip_is_private` share one response rule
         // intentionally: sing-box combines destination-address matchers as OR,
-        // matching the legacy address-filter semantics. The second respond
-        // rule preserves `rule_set_ip_cidr_accept_empty` for NODATA responses.
+        // matching the legacy address-filter semantics.
+        //
+        // The empty-response branch is a logical AND and must never be a
+        // bare `{match_response, ip_accept_any, invert}` rule. Two sing-box
+        // 1.14 facts make the bare form a trap: `match_response` on a nil
+        // response (probe timed out or dial failed) short-circuits to the
+        // value of `invert`, so a bare inverted rule matches precisely when
+        // the probe produced nothing; and `respond` without an evaluated
+        // response fails the whole query instead of falling through. REFUSED
+        // / SERVFAIL are zero-address responses, so the bare form also
+        // adopts them verbatim. Inside the AND, the sibling
+        // `response_rcode: NOERROR` is false on nil and on rcode ≠ 0, so the
+        // inverted clause can only win for a real empty NOERROR answer.
         rules.push({
             action: 'evaluate',
             server: CONTRACT_DNS_TAGS.SYSTEM,
@@ -306,8 +327,16 @@ function buildDnsRules(
         });
         rules.push({
             match_response: true,
-            ip_accept_any: true,
-            invert: true,
+            response_rcode: 'NXDOMAIN',
+            action: 'respond',
+        });
+        rules.push({
+            type: 'logical',
+            mode: 'and',
+            rules: [
+                { match_response: true, response_rcode: 'NOERROR' },
+                { match_response: true, ip_accept_any: true, invert: true },
+            ],
             action: 'respond',
         });
     } else {
@@ -340,6 +369,34 @@ function buildDns(
         final: CONTRACT_DNS_TAGS.DNS_PROXY,
         strategy: 'prefer_ipv4',
     };
+}
+
+// ---------------------------------------------------------------------------
+// HTTP client for remote rule-set downloads
+// ---------------------------------------------------------------------------
+
+/**
+ * Generator-owned tag, not a contract: sing-box binds it through
+ * `route.default_http_client`, and the OneBox runtime never looks it up.
+ */
+const RULE_SET_DOWNLOAD_HTTP_CLIENT_TAG = 'rule-set-download';
+
+/**
+ * sing-box 1.14 deprecates the implicit default HTTP client that remote
+ * rule-sets downloaded through (removed in 1.16, after which every
+ * `type: remote` rule-set fails to load). The implicit client used the
+ * default outbound, i.e. `route.final` = ExitGateway, so detouring the
+ * explicit client through ExitGateway keeps today's download path
+ * byte-for-byte. Whether downloads should instead go `direct` is a policy
+ * decision for the runtime owner, not a generator default.
+ */
+function buildHttpClients(): HttpClient[] {
+    return [
+        {
+            tag: RULE_SET_DOWNLOAD_HTTP_CLIENT_TAG,
+            detour: CONTRACT_OUTBOUND_TAGS.EXIT_GATEWAY,
+        },
+    ];
 }
 
 // ---------------------------------------------------------------------------
@@ -542,6 +599,7 @@ function buildRoute(
         final: CONTRACT_OUTBOUND_TAGS.EXIT_GATEWAY,
         default_domain_resolver: CONTRACT_DNS_TAGS.SYSTEM,
         auto_detect_interface: true,
+        default_http_client: RULE_SET_DOWNLOAD_HTTP_CLIENT_TAG,
         rule_set: intent.ruleSetDefinitions,
     };
 }
@@ -567,5 +625,6 @@ export function build(intent: RegionIntent, variant: Variant): SingBoxConfig {
         // across multiple builds in the same process.
         experimental: JSON.parse(JSON.stringify(EMPTY_EXPERIMENTAL)),
         outbounds: buildOutbounds(),
+        http_clients: buildHttpClients(),
     };
 }

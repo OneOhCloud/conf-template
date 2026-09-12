@@ -98,7 +98,7 @@ pnpm generate
 
 # full check with sing-box check on every file
 SING_BOX_BIN=/path/to/1.13.8/sing-box \
-SING_BOX_BIN_1_14=/path/to/1.14.0-beta.10/sing-box \
+SING_BOX_BIN_1_14=/path/to/1.14.0/sing-box \
 pnpm generate:strict
 
 # dry run — validate only, don't write
@@ -231,6 +231,10 @@ The generator emits this verbatim into every variant's `route.rule_set`
 block. Adding a new entry without a corresponding reference, or
 referencing a tag without an entry here, trips the validator.
 
+The `1.14` generator downloads them through an explicit `http_clients`
+entry (tag `rule-set-download`, detour `ExitGateway`) bound via
+`route.default_http_client`; legacy buckets emit neither key.
+
 **Never change an existing entry's `format` under the same tag.** sing-box
 caches rule-sets by tag alone (`CacheFile.LoadRuleSet(tag)`) and parses the
 cached bytes with whatever format the config currently declares, so every
@@ -321,13 +325,27 @@ Runs on every generator output before write. Checks:
    routed `direct` in route.rules must resolve via `system` in dns.rules,
    and every rule_set routed `ExitGateway` must NOT resolve via `system`.
    Catches the `www.qq.com → overseas IP` class structurally.
-10. **In-region address filter** (rules variants only): `dns.rules` must
-    contain `{rule_set:[<ipRuleSet>], ip_is_private:true, server:system}`,
-    without `query_type`, positioned after the direct set rule and before
-    the fakeip catchall. Catches the "unlisted domain hosted in-region gets
-    proxied" class, and guards the two ways the rule silently dies (a
-    `query_type` makes sing-box skip it on internal lookups; sitting after
-    the fakeip catchall means it never runs).
+10. **In-region address filter** (rules variants only): legacy buckets'
+    `dns.rules` must contain `{rule_set:[<ipRuleSet>], ip_is_private:true,
+    server:system}`, without `query_type`. The `1.14` bucket must instead
+    carry `{action:evaluate, server:system}` followed by exactly three
+    respond rules: `{match_response, rule_set:[<ipRuleSet>],
+    ip_is_private}`, `{match_response, response_rcode:NXDOMAIN}`, and a
+    logical AND of `{match_response, response_rcode:NOERROR}` with
+    `{match_response, ip_accept_any, invert}`. Both forms sit after the
+    direct set rule, after the `foreignDomainRuleSet` short-circuit, and
+    before the fakeip catchall. Catches the "unlisted domain hosted
+    in-region gets proxied" class, and guards the ways the probe silently
+    dies (a `query_type` makes sing-box skip it on internal lookups; sitting
+    after the fakeip catchall means it never runs).
+11. **No bare inverted response match** (`1.14` only): a non-logical DNS
+    rule with `match_response` must not carry `invert`; a logical DNS rule
+    must not carry `invert` itself; a logical AND must keep at least one
+    non-inverted sub-rule.
+12. **Rule-set download client**: the `1.14` bucket must emit
+    `http_clients`, `route.default_http_client` must name one of its
+    entries, and every entry's `detour` must be a defined outbound. Legacy
+    buckets must emit neither key.
 
 A failure throws `ValidationError` and aborts the run. The validator
 runs BEFORE any file write, so failed runs leave the repo clean.
@@ -379,7 +397,7 @@ stable/beta/dev or PR touching `conf/`, `scripts/`, or the workflow
 itself. It:
 
 1. Installs deps with `pnpm install --frozen-lockfile`
-2. Downloads sing-box v1.13.8 and v1.14.0-beta.10 linux-amd64 binaries
+2. Downloads sing-box v1.13.8 and v1.14.0 linux-amd64 binaries
 3. Runs `pnpm generate:strict` with the legacy fallback and 1.14 override
 4. Runs `git diff --exit-code` to verify no drift between committed and
    generated files
@@ -394,10 +412,9 @@ Drift detection catches three failure modes:
 
 ## Known limitation: legacy bucket validation
 
-CI uses sing-box 1.14.0-beta.10 for `conf/1.14/` and 1.13.8 for every
-legacy bucket. This proves the new output is accepted by the exact target
-prerelease, but does not prove `conf/1.12/` is accepted by a real 1.12
-parser.
+CI uses sing-box 1.14.0 for `conf/1.14/` and 1.13.8 for every legacy
+bucket. This proves the new output is accepted by the target release, but
+does not prove `conf/1.12/` is accepted by a real 1.12 parser.
 
 For us this is fine because:
 - Our generator's output uses features that have been stable since

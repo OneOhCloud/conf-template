@@ -36,7 +36,7 @@ on:
 #      catches it.
 #
 # Version pins: legacy buckets are checked with 1.13.8; the 1.14 bucket is
-# checked with the exact prerelease it targets. `scripts/generate.ts` resolves
+# checked with the 1.14.0 stable release. `scripts/generate.ts` resolves
 # the per-bucket override before the legacy fallback binary.
 
 permissions:
@@ -68,7 +68,7 @@ jobs:
         run: |
           set -euo pipefail
           LEGACY_VERSION="1.13.8"
-          BETA_VERSION="1.14.0-beta.10"
+          V1_14_VERSION="1.14.0"
           CURL_ARGS=(--fail --show-error --location --connect-timeout 15 --max-time 300)
 
           curl "${CURL_ARGS[@]}" -o sing-box-legacy.tar.gz \
@@ -76,19 +76,19 @@ jobs:
           tar xzf sing-box-legacy.tar.gz
           mv "sing-box-${LEGACY_VERSION}-linux-amd64/sing-box" ./sing-box-legacy
 
-          curl "${CURL_ARGS[@]}" -o sing-box-beta.tar.gz \
-            "https://github.com/SagerNet/sing-box/releases/download/v${BETA_VERSION}/sing-box-${BETA_VERSION}-linux-amd64.tar.gz"
-          tar xzf sing-box-beta.tar.gz
-          mv "sing-box-${BETA_VERSION}-linux-amd64/sing-box" ./sing-box-beta
+          curl "${CURL_ARGS[@]}" -o sing-box-1-14.tar.gz \
+            "https://github.com/SagerNet/sing-box/releases/download/v${V1_14_VERSION}/sing-box-${V1_14_VERSION}-linux-amd64.tar.gz"
+          tar xzf sing-box-1-14.tar.gz
+          mv "sing-box-${V1_14_VERSION}-linux-amd64/sing-box" ./sing-box-1-14
 
-          chmod +x ./sing-box-legacy ./sing-box-beta
+          chmod +x ./sing-box-legacy ./sing-box-1-14
           ./sing-box-legacy version
-          ./sing-box-beta version
+          ./sing-box-1-14 version
 
       - name: Run generator with strict validation
         env:
           SING_BOX_BIN: ${{ github.workspace }}/sing-box-legacy
-          SING_BOX_BIN_1_14: ${{ github.workspace }}/sing-box-beta
+          SING_BOX_BIN_1_14: ${{ github.workspace }}/sing-box-1-14
         run: |
           pnpm test
           pnpm generate:strict

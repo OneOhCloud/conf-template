@@ -173,10 +173,18 @@ outbound. Catches typos before sing-box sees the config.
 Legacy buckets express that probe as one DNS rule with
 `rule_set: [<ipRuleSet>]`, `ip_is_private: true`, and no `query_type`.
 The `1.14` bucket expresses the same behavior with an `evaluate` rule,
-followed by two `match_response` / `respond` rules: accept in-region or
-private answers, then accept an empty response. This is what makes an
-*unlisted* domain that resolves into the region route direct while foreign
-answers fall through to fakeip / `dns.final`.
+followed by three `match_response` / `respond` rules: accept in-region or
+private answers, answer NXDOMAIN verbatim, then a logical AND of
+`response_rcode: NOERROR` and an inverted `ip_accept_any` that accepts a
+NOERROR answer with no address. REFUSED, SERVFAIL and a timed-out probe
+match none of them and fall through to fakeip / `dns.final`. `invert`
+appears only inside that logical rule: on a nil response sing-box
+short-circuits `match_response` to `invert`, and `respond` then fails the
+query, so the validator rejects `invert` on any bare `match_response`
+rule, on a logical rule itself, and on an AND whose sub-rules are all
+inverted. This is what makes an *unlisted* domain that resolves into the
+region route direct while foreign answers fall through to fakeip /
+`dns.final`.
 
 The known-overseas short-circuit (`proxySet.foreignDomainRuleSet` →
 proxy-side resolver) must come before it, or a poisoned CN answer for a
@@ -225,7 +233,7 @@ copy to a temp file, runs check, and deletes the temp. The real on-disk
 file is never modified during check.
 
 `SING_BOX_BIN=/path/to/1.13.8/sing-box \
-SING_BOX_BIN_1_14=/path/to/1.14.0-beta.10/sing-box pnpm generate:strict`
+SING_BOX_BIN_1_14=/path/to/1.14.0/sing-box pnpm generate:strict`
 runs this locally. CI pins those two versions and selects the matching
 binary for each emitted bucket.
 
@@ -242,6 +250,7 @@ binary for each emitted bucket.
 | Add a new region (e.g. `en-us`) | New file `intent/en-us.ts`, add `'en-us'` to `Region` in `types.ts`, register in `INTENTS` map in `generate.ts` |
 | New sing-box kernel warrants a fork (breaking syntax, or a feature older buckets must not emit) | Create `conf/<bucket>/`, copy the latest generator to `generator/sing-box-v<bucket>.ts`, add a `VERSIONS` entry and a `GENERATORS` entry in `generate.ts`. One generator per bucket, never shared. |
 | Add a new variant type (e.g. `tun-game`) | Add to `Variant` in `types.ts`, add a builder branch in the generator, add variant-specific validator rule |
+| Change the remote rule-set download client (`http_clients` detour) | `generator/sing-box-v1-14.ts::buildHttpClients` — the tag is a generator constant, not a `CONTRACT_*`; legacy buckets must not emit the key |
 | Runtime consumer's contract tag changed | Update `CONTRACT_*` in `types.ts`. **This is a cross-repo change** — coordinate with the consumer before merging |
 
 ## Anti-Patterns

@@ -113,6 +113,7 @@
         "final": "ExitGateway",
         "default_domain_resolver": "system",
         "auto_detect_interface": true,
+        "default_http_client": "rule-set-download",
         "rule_set": [
             {
                 "tag": "geoip-cn",
@@ -217,6 +218,12 @@
             "type": "urltest",
             "url": "http://www.gstatic.com/generate_204",
             "outbounds": []
+        }
+    ],
+    "http_clients": [
+        {
+            "tag": "rule-set-download",
+            "detour": "ExitGateway"
         }
     ]
 }

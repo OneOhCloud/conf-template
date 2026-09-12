@@ -8,7 +8,7 @@
         "generate": "tsx scripts/generate.ts",
         "generate:strict": "tsx scripts/generate.ts --strict",
         "check": "tsx scripts/generate.ts --dry-run",
-        "test": "tsx --test scripts/convention/generator/*.test.ts"
+        "test": "tsx --test scripts/convention/*.test.ts scripts/convention/generator/*.test.ts"
     },
     "devDependencies": {
         "@types/node": "^22.10.0",

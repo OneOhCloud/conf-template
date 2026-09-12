@@ -21,12 +21,31 @@
  *
  *   3. In-region address filter. Every `-rules` variant probes the system
  *      resolver between the direct set and fakeip catchall. Legacy buckets
- *      use the address-filter rule; 1.14 uses evaluate + match_response.
+ *      use the address-filter rule; 1.14 uses evaluate + three respond
+ *      rules (in-region/private, NXDOMAIN, logical NOERROR-and-no-address).
  *      Both forms let an unlisted domain resolving into the region route
- *      direct while other domains still reach the proxy as domain names.
+ *      direct while other domains still reach the proxy as domain names,
+ *      and both let a failed probe fall through to fakeip / dns.final.
+ *
+ *   4. No `respond` rule satisfiable on a nil response (1.14). sing-box
+ *      short-circuits `match_response` to the value of `invert` when there
+ *      is no evaluated response, query-side matchers ignore the response,
+ *      and `respond` then fails the query instead of falling through. One
+ *      evaluator (`matchesOnNilResponse`) folds logical rules, so bare
+ *      inverts, all-inverted AND / OR groups, self-inverted logical rules
+ *      and query-side siblings are all caught by the same invariant. The
+ *      probe span is exact (`expectedResponseProbe`) and closed: nothing
+ *      after it may respond or match the response.
+ *
+ *   5. Explicit rule-set download client (1.14). The implicit default HTTP
+ *      client is deprecated in 1.14 and removed in 1.16; only `run` reports
+ *      it, so the validator requires `http_clients` + a resolvable
+ *      `route.default_http_client`. Legacy kernels reject both keys.
  */
 
-import type { RegionIntent, SingBoxConfig, Variant, Version } from './types';
+import { isDeepStrictEqual } from 'node:util';
+
+import type { DnsRule, RegionIntent, SingBoxConfig, Variant, Version } from './types';
 import {
     CONTRACT_DNS_TAGS,
     CONTRACT_INBOUND_TAGS,
@@ -42,6 +61,102 @@ export class ValidationError extends Error {
     ) {
         super(`${fileLabel}: ${issues.length} validation issue(s)\n  ` + issues.join('\n  '));
     }
+}
+
+// ---------------------------------------------------------------------------
+// Bucket capabilities. Exhaustive over `Version` on purpose: forking the
+// next bucket (copy the generator, add the version) fails to compile until
+// the new bucket declares which rule family it belongs to, so a 1.14-shaped
+// config can never be validated under the legacy rules by omission.
+// ---------------------------------------------------------------------------
+
+/** Buckets whose DNS probe is `evaluate` + response matching (sing-box ≥ 1.14). */
+const USES_EVALUATE_PROBE: Record<Version, boolean> = {
+    '1.12': false,
+    '1.13': false,
+    '1.13.8': false,
+    '1.14': true,
+};
+
+/** Buckets whose kernel accepts `http_clients` / `route.default_http_client`. */
+const SUPPORTS_HTTP_CLIENTS: Record<Version, boolean> = {
+    '1.12': false,
+    '1.13': false,
+    '1.13.8': false,
+    '1.14': true,
+};
+
+function usesEvaluateProbe(version: Version): boolean {
+    return USES_EVALUATE_PROBE[version];
+}
+
+function supportsHttpClients(version: Version): boolean {
+    return SUPPORTS_HTTP_CLIENTS[version];
+}
+
+/**
+ * The one specification of the 1.14 in-region probe. The validator compares
+ * generator output against it rule-for-rule and the generator test
+ * deep-equals against it, so the shape is written down exactly once here.
+ *
+ *   [0] evaluate at `system`
+ *   [1] respond: in-region / private answer
+ *   [2] respond: NXDOMAIN verbatim
+ *   [3] respond: NOERROR with no address (NODATA / CNAME-only)
+ *
+ * REFUSED / SERVFAIL / a timed-out probe satisfy none of [1]–[3] and fall
+ * through to fakeip / `dns.final`. `invert` appears only inside [3], where
+ * the non-inverted `NOERROR` sibling is false on a nil response.
+ */
+export function expectedResponseProbe(intent: RegionIntent): DnsRule[] {
+    return [
+        { action: 'evaluate', server: CONTRACT_DNS_TAGS.SYSTEM },
+        {
+            match_response: true,
+            rule_set: [intent.directSet.ipRuleSet],
+            ip_is_private: true,
+            action: 'respond',
+        },
+        { match_response: true, response_rcode: 'NXDOMAIN', action: 'respond' },
+        {
+            type: 'logical',
+            mode: 'and',
+            rules: [
+                { match_response: true, response_rcode: 'NOERROR' },
+                { match_response: true, ip_accept_any: true, invert: true },
+            ],
+            action: 'respond',
+        },
+    ];
+}
+
+const RESPONSE_PROBE_ROLES = [
+    'evaluate probe via system',
+    'in-region/private respond',
+    'NXDOMAIN respond',
+    'NOERROR-and-no-address respond',
+] as const;
+
+/**
+ * Whether a DNS rule is satisfied when the preceding `evaluate` produced no
+ * response (probe timed out or failed to dial). sing-box then short-circuits
+ * `match_response` to the value of `invert`; query-side matchers never look
+ * at the response, so they still match; a logical rule folds its sub-rules
+ * and applies its own `invert`. A `respond` rule for which this is true
+ * fires on a failed probe and errors the whole query instead of falling
+ * through.
+ */
+function matchesOnNilResponse(rule: any): boolean {
+    if (rule?.type === 'logical') {
+        const subRules: any[] = Array.isArray(rule.rules) ? rule.rules : [];
+        const folded =
+            rule.mode === 'or'
+                ? subRules.some(matchesOnNilResponse)
+                : subRules.every(matchesOnNilResponse);
+        return rule.invert === true ? !folded : folded;
+    }
+    if (rule?.match_response === true) return rule.invert === true;
+    return true;
 }
 
 export function validate(
@@ -136,6 +251,9 @@ export function validate(
     };
     for (const d of dup(dnsServerTagList)) issues.push(`duplicate dns.servers tag: ${d}`);
     for (const d of dup(outboundTagList)) issues.push(`duplicate outbounds tag: ${d}`);
+    for (const d of dup((config.http_clients ?? []).map((client) => client.tag))) {
+        issues.push(`duplicate http_clients tag: ${d}`);
+    }
 
     // -- 2. DNS server references ---------------------------------------
     const dnsServerTags = new Set((dns.servers ?? []).map((s) => (s as { tag: string }).tag));
@@ -200,6 +318,43 @@ export function validate(
         }
     }
 
+    // -- 4a. Remote rule-set download client ----------------------------
+    // sing-box 1.14 deprecates the implicit default HTTP client (removed in
+    // 1.16). `sing-box check` never surfaces that WARN — only `run` does —
+    // so the 1.14 bucket must bind an explicit client. 1.13.x kernels reject
+    // both keys as unknown fields, so legacy buckets must not carry them.
+    const httpClients = config.http_clients;
+    const defaultHttpClient = route.default_http_client;
+    if (supportsHttpClients(version)) {
+        if (!httpClients || httpClients.length === 0) {
+            issues.push(
+                `${variant}: sing-box 1.14 needs an explicit http_clients entry for remote ` +
+                    `rule-set downloads — the implicit default client is deprecated and is ` +
+                    `removed in 1.16, after which every remote rule-set fails to load`,
+            );
+        }
+        const httpClientTags = new Set((httpClients ?? []).map((client) => client.tag));
+        if (!defaultHttpClient) {
+            issues.push(`${variant}: route.default_http_client must name the rule-set download client`);
+        } else if (!httpClientTags.has(defaultHttpClient)) {
+            issues.push(`route.default_http_client references missing http_client: ${defaultHttpClient}`);
+        }
+        for (const client of httpClients ?? []) {
+            if (!outboundTags.has(client.detour)) {
+                issues.push(`http_clients[${client.tag}].detour references missing outbound: ${client.detour}`);
+            }
+        }
+    } else {
+        if (httpClients !== undefined) {
+            issues.push(`${variant}: http_clients is an unknown field to sing-box ${version} and is rejected`);
+        }
+        if (defaultHttpClient !== undefined) {
+            issues.push(
+                `${variant}: route.default_http_client is an unknown field to sing-box ${version} and is rejected`,
+            );
+        }
+    }
+
     // -- 5. Version-specific forbidden fields (1.13.8+) -----------------
     for (const inb of inbounds) {
         if (inb.sniff !== undefined || inb.sniff_override_destination !== undefined) {
@@ -210,7 +365,7 @@ export function validate(
         }
     }
 
-    if (version === '1.14') {
+    if (usesEvaluateProbe(version)) {
         const walkDNSRules = (rulesToWalk: any[]): void => {
             for (const rule of rulesToWalk) {
                 if (rule?.strategy !== undefined) {
@@ -225,7 +380,25 @@ export function validate(
                 if (Array.isArray(rule?.rules)) walkDNSRules(rule.rules);
             }
         };
-        walkDNSRules((dns.rules ?? []) as any[]);
+        const dnsRules = (dns.rules ?? []) as any[];
+        walkDNSRules(dnsRules);
+
+        // Invariant: no `respond` rule may be satisfiable when the evaluated
+        // response is nil. `respond` without a response fails the whole query,
+        // so any such rule turns a timed-out `system` probe into a hard error
+        // instead of the fall-through to fakeip / dns.final. This single
+        // evaluator covers bare inverted matches, logical rules that invert
+        // themselves, all-inverted AND / OR groups, and query-side siblings
+        // that ignore the response.
+        dnsRules.forEach((rule, idx) => {
+            if (rule?.action !== 'respond' || !matchesOnNilResponse(rule)) return;
+            issues.push(
+                `${variant}: dns.rules[${idx}] responds but is satisfiable with no evaluated ` +
+                    `response — on a failed probe match_response short-circuits to invert and ` +
+                    `query-side matchers ignore the response, so this rule fires and respond ` +
+                    `errors the whole query: ${JSON.stringify(rule)}`,
+            );
+        });
     }
 
     // -- 6. Variant structural requirements -----------------------------
@@ -425,7 +598,7 @@ export function validate(
         for (const [tag, obSet] of routeRuleSetOutbounds) {
             if (obSet.has('direct')) {
                 if (
-                    version === '1.14' &&
+                    usesEvaluateProbe(version) &&
                     tag === intent.directSet.ipRuleSet &&
                     responseMatchedRuleSets.has(tag)
                 ) {
@@ -460,7 +633,10 @@ export function validate(
 
     // -- 10. In-region address filter (rules variants only) -------------
     // 1.12/1.13 use the legacy route+address-filter form. 1.14 explicitly
-    // evaluates system DNS and binds response-matching respond actions.
+    // evaluates system DNS and binds three respond rules to the response:
+    // in-region/private, NXDOMAIN verbatim, then a logical AND that accepts
+    // only a NOERROR answer with no address. REFUSED / SERVFAIL / timeout
+    // match none of them and fall through, as the legacy filter let them.
     if (isRulesVariant) {
         const dnsRules = (dns.rules ?? []) as any[];
         const directSetIdx = dnsRules.findIndex(
@@ -477,7 +653,7 @@ export function validate(
         let probeStartIdx = -1;
         let probeEndIdx = -1;
 
-        if (version === '1.14') {
+        if (usesEvaluateProbe(version)) {
             const evaluateIdx = dnsRules.findIndex(
                 (rule) =>
                     rule?.action === 'evaluate' &&
@@ -489,43 +665,36 @@ export function validate(
                         `"${CONTRACT_DNS_TAGS.SYSTEM}" before response matching`,
                 );
             } else {
+                const expected = expectedResponseProbe(intent);
                 probeStartIdx = evaluateIdx;
-                probeEndIdx = evaluateIdx + 2;
-                const evaluateRule = dnsRules[evaluateIdx];
-                const addressRule = dnsRules[evaluateIdx + 1];
-                const emptyRule = dnsRules[evaluateIdx + 2];
+                probeEndIdx = evaluateIdx + expected.length - 1;
 
-                if (evaluateRule.tag !== undefined || evaluateRule.query_type !== undefined) {
+                // Exact rule-for-rule equality against the one spec above.
+                // Extra keys are rejected too: an `ip_is_private` slipped onto
+                // the NOERROR clause would need an address while its sibling
+                // needs none, silently making NODATA answers unadoptable.
+                expected.forEach((expectedRule, offset) => {
+                    const idx = evaluateIdx + offset;
+                    const actual = dnsRules[idx];
+                    if (isDeepStrictEqual(actual, expectedRule)) return;
                     issues.push(
-                        `${variant}: anonymous evaluate rule must not carry tag/query_type`,
+                        `${variant}: dns.rules[${idx}] (${RESPONSE_PROBE_ROLES[offset]}) must be ` +
+                            `${JSON.stringify(expectedRule)}; got ${JSON.stringify(actual)}`,
                     );
-                }
-                if (
-                    addressRule?.match_response !== true ||
-                    addressRule?.action !== 'respond' ||
-                    addressRule?.ip_is_private !== true ||
-                    !Array.isArray(addressRule?.rule_set) ||
-                    !addressRule.rule_set.includes(intent.directSet.ipRuleSet)
-                ) {
+                });
+
+                // The span is closed: a respond / response match after it
+                // would re-adopt what the probe deliberately let fall through
+                // (e.g. a SERVFAIL respond re-introduces the F-001 regression).
+                dnsRules.forEach((rule, idx) => {
+                    if (idx <= probeEndIdx) return;
+                    if (rule?.action !== 'respond' && rule?.match_response !== true) return;
                     issues.push(
-                        `${variant}: dns.rules[${evaluateIdx + 1}] must respond to the evaluated ` +
-                            `in-region/private response`,
+                        `${variant}: dns.rules[${idx}] is a respond / response match after the ` +
+                            `probe span ending at ${probeEndIdx} — only the probe's own rules ` +
+                            `may act on the evaluated response: ${JSON.stringify(rule)}`,
                     );
-                }
-                if (addressRule?.query_type !== undefined) {
-                    issues.push(`${variant}: response address filter must not carry query_type`);
-                }
-                if (
-                    emptyRule?.match_response !== true ||
-                    emptyRule?.action !== 'respond' ||
-                    emptyRule?.ip_accept_any !== true ||
-                    emptyRule?.invert !== true
-                ) {
-                    issues.push(
-                        `${variant}: dns.rules[${evaluateIdx + 2}] must respond to an empty ` +
-                            `evaluated address set`,
-                    );
-                }
+                });
             }
         } else {
             const filterIdx = dnsRules.findIndex((rule) => rule?.ip_is_private === true);

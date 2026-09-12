@@ -256,8 +256,69 @@ export interface RegionIntent {
 }
 
 // ===========================================================================
+// DNS rule shapes (sing-box 1.14 response matching)
+// ===========================================================================
+
+/**
+ * Response codes a `match_response` rule may assert with `response_rcode`.
+ * Values are sing-box's `dns.StringToRcode` keys — NOT the legacy
+ * `success` / `name_error` spellings of the removed per-rule `rcode` field.
+ */
+export type DnsResponseRcode = 'NOERROR' | 'FORMERR' | 'SERVFAIL' | 'NXDOMAIN' | 'NOTIMP' | 'REFUSED';
+
+/** A rule that matches the query (pre-`evaluate`) or selects a server. */
+export interface DnsQueryRule {
+    query_type?: string[];
+    domain?: string[];
+    domain_suffix?: string[];
+    rule_set?: string[];
+    server?: string;
+    action?: 'reject' | 'evaluate';
+}
+
+/**
+ * A rule that matches the response produced by a preceding `evaluate`.
+ *
+ * `invert` is deliberately allowed here only so the shape can be nested
+ * inside a `DnsLogicalRule`: on a nil response sing-box short-circuits
+ * `match_response` to the value of `invert`, so a bare inverted rule matches
+ * exactly when the probe failed. The validator rejects it outside a logical
+ * rule.
+ */
+export interface DnsResponseRule {
+    match_response: true;
+    rule_set?: string[];
+    ip_is_private?: true;
+    ip_accept_any?: true;
+    response_rcode?: DnsResponseRcode;
+    invert?: true;
+    action?: 'respond';
+}
+
+/** Combines response sub-rules; the action lives on the outer rule only. */
+export interface DnsLogicalRule {
+    type: 'logical';
+    mode: 'and' | 'or';
+    rules: DnsResponseRule[];
+    action: 'respond';
+}
+
+export type DnsRule = DnsQueryRule | DnsResponseRule | DnsLogicalRule;
+
+// ===========================================================================
 // Generator output type — shape of a valid sing-box config
 // ===========================================================================
+
+/**
+ * Explicit HTTP client for remote rule-set downloads (sing-box 1.14+).
+ * The tag is generator-owned: sing-box binds it through
+ * `route.default_http_client`, and nothing in the OneBox runtime looks it
+ * up by name, so it is not a `CONTRACT_*` constant.
+ */
+export interface HttpClient {
+    tag: string;
+    detour: string;
+}
 
 export interface SingBoxConfig {
     log: { disabled: false; level: string; timestamp: false };
@@ -273,6 +334,7 @@ export interface SingBoxConfig {
         final: string;
         default_domain_resolver?: string;
         auto_detect_interface?: boolean;
+        default_http_client?: string;
         rule_set: RuleSetRemote[];
     };
     experimental: {
@@ -280,4 +342,6 @@ export interface SingBoxConfig {
         cache_file: Record<string, unknown>;
     };
     outbounds: unknown[];
+    /** 1.14 bucket only — 1.13.x kernels reject the key as unknown. */
+    http_clients?: HttpClient[];
 }
