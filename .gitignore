@@ -75,9 +75,6 @@ instance/
 # Scrapy stuff:
 .scrapy
 
-# Sphinx documentation
-docs/_build/
-
 # PyBuilder
 .pybuilder/
 target/
@@ -212,7 +209,6 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
-todo.md
 
-# AI 生成的审计报告只在本地保留，不进版本控制
-docs/audit/
+# 本地文档目录（AI 生成的审计报告等）只在本地保留，不进版本控制
+docs/
