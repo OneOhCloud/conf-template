@@ -15,16 +15,14 @@
                 "tag": "system",
                 "type": "udp",
                 "server": "119.29.29.29",
-                "server_port": 53,
-                "connect_timeout": "5s"
+                "server_port": 53
             },
             {
                 "tag": "dns_proxy",
                 "type": "tcp",
                 "server": "1.0.0.1",
                 "server_port": 53,
-                "detour": "ExitGateway",
-                "connect_timeout": "5s"
+                "detour": "ExitGateway"
             }
         ],
         "rules": [

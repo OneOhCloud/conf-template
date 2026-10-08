@@ -204,7 +204,9 @@ function buildDnsServers(
             type: 'udp',
             server: intent.dnsServers.systemDns.server,
             server_port: intent.dnsServers.systemDns.serverPort ?? 53,
-            connect_timeout: intent.dnsServers.systemDns.connectTimeout ?? '5s',
+            // No connect_timeout from 1.14 on: UDP has no connect phase, and the
+            // OneBoxN kernel rejects fields it does not honor. sing-box's default
+            // connect timeout is 5s, so omitting it equals the old value.
         },
         // `dns_proxy` — TCP DNS forced through ExitGateway. Tag + detour
         // pinned by contract so OneBox's merger finds it.
@@ -214,7 +216,8 @@ function buildDnsServers(
             server: intent.dnsServers.dnsProxy.server,
             server_port: intent.dnsServers.dnsProxy.serverPort ?? 53,
             detour: CONTRACT_OUTBOUND_TAGS.EXIT_GATEWAY,
-            connect_timeout: intent.dnsServers.dnsProxy.connectTimeout ?? '5s',
+            // Same as `system`: the detour outbound owns the connect, and the
+            // 5s default equals the old value.
         },
     ];
     if (opts.hasFakeIp) {
