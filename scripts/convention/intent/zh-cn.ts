@@ -101,6 +101,14 @@ export const ZH_CN_INTENT: RegionIntent = {
             '.oaiusercontent.com',
             '.tiktok.com',
         ],
+        ipRuleSets: [
+            {
+                tag: 'geoip-telegram',
+                type: 'remote',
+                format: 'binary',
+                url: 'https://jsdelivr.oneoh.cloud/gh/MetaCubeX/meta-rules-dat@sing/geo/geoip/telegram.srs',
+            },
+        ],
         // Known-overseas domains. DNS-side short-circuit so they are never
         // asked at DNSPod CN — a poisoned answer landing inside geoip-cn
         // would otherwise be adopted and the domain routed direct.

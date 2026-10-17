@@ -543,7 +543,7 @@ function buildTagAnchorRules(): unknown[] {
 function buildProxyRouteRule(proxySet: ProxySet): unknown {
     return {
         domain_suffix: proxySet.domainSuffixes,
-        rule_set: proxySet.ruleSets,
+        rule_set: [...proxySet.ruleSets, ...proxySet.ipRuleSets.map((definition) => definition.tag)],
         outbound: CONTRACT_OUTBOUND_TAGS.EXIT_GATEWAY,
     };
 }
@@ -603,7 +603,7 @@ function buildRoute(
         default_domain_resolver: CONTRACT_DNS_TAGS.SYSTEM,
         auto_detect_interface: true,
         default_http_client: RULE_SET_DOWNLOAD_HTTP_CLIENT_TAG,
-        rule_set: intent.ruleSetDefinitions,
+        rule_set: [...intent.ruleSetDefinitions, ...intent.proxySet.ipRuleSets],
     };
 }
 

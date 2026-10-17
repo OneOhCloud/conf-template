@@ -51,6 +51,27 @@ describe('sing-box 1.14 generator', () => {
         }
     });
 
+    it('routes proxy IP rule-sets to ExitGateway and keeps them out of DNS', () => {
+        const ipTags = ZH_CN_INTENT.proxySet.ipRuleSets.map((definition) => definition.tag);
+        assert.ok(ipTags.length > 0);
+        for (const variant of VARIANTS) {
+            const config = build(ZH_CN_INTENT, variant);
+            const definedTags = (config.route.rule_set as { tag: string }[]).map((definition) => definition.tag);
+            for (const tag of ipTags) {
+                assert.ok(definedTags.includes(tag), `${variant}: ${tag} defined`);
+                assert.equal(JSON.stringify(config.dns.rules).includes(`"${tag}"`), false, `${variant}: ${tag} not in dns`);
+            }
+        }
+        for (const variant of ['tun-rules', 'mixed-rules'] as const) {
+            const rules = build(ZH_CN_INTENT, variant).route.rules as Record<string, unknown>[];
+            const proxyRule = rules.find(
+                (rule) => rule.outbound === 'ExitGateway' && Array.isArray(rule.rule_set) &&
+                    ipTags.every((tag) => (rule.rule_set as string[]).includes(tag)),
+            );
+            assert.ok(proxyRule, `${variant}: proxy route rule carries the IP rule-sets`);
+        }
+    });
+
     it('binds remote rule-set downloads to an explicit HTTP client detoured via ExitGateway', () => {
         for (const variant of VARIANTS) {
             const config = build(ZH_CN_INTENT, variant);

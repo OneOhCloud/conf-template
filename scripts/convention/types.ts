@@ -222,6 +222,20 @@ export interface ProxySet {
     ruleSets: string[];
     domainSuffixes: string[];
     /**
+     * IP rule_sets routed to the proxy. Route side only: an IP rule_set in
+     * `dns.rules` matches response addresses and would change resolution,
+     * so it never mirrors into DNS the way `ruleSets` does.
+     *
+     * Carries full definitions instead of tags into `ruleSetDefinitions`,
+     * because every generator emits that registry wholesale. Only buckets
+     * from 1.14 on emit these; older buckets stay byte-identical.
+     *
+     * A client that captures only fakeip plus these ranges in TUN relies on
+     * this rule to still proxy destinations that never pass through DNS
+     * (e.g. Telegram's built-in server addresses).
+     */
+    ipRuleSets: RuleSetRemote[];
+    /**
      * rule_set of domains known to live outside the region. DNS side only —
      * it is NOT emitted into route.rules, because routing already sends
      * anything unmatched to the proxy and putting it in front of the direct

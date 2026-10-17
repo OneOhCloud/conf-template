@@ -190,6 +190,12 @@
                 "type": "remote",
                 "format": "binary",
                 "url": "https://jsdelivr.oneoh.cloud/gh/SagerNet/sing-geosite@rule-set/geosite-tiktok.srs"
+            },
+            {
+                "tag": "geoip-telegram",
+                "type": "remote",
+                "format": "binary",
+                "url": "https://jsdelivr.oneoh.cloud/gh/MetaCubeX/meta-rules-dat@sing/geo/geoip/telegram.srs"
             }
         ]
     },
