@@ -282,6 +282,7 @@ export type DnsResponseRcode = 'NOERROR' | 'FORMERR' | 'SERVFAIL' | 'NXDOMAIN' |
 
 /** A rule that matches the query (pre-`evaluate`) or selects a server. */
 export interface DnsQueryRule {
+    inbound?: string[];
     query_type?: string[];
     domain?: string[];
     domain_suffix?: string[];

@@ -33,12 +33,22 @@
         ],
         "rules": [
             {
+                "inbound": [
+                    "tun",
+                    "mixed"
+                ],
                 "query_type": [
                     "HTTPS",
                     "SVCB",
                     "PTR"
                 ],
                 "action": "reject"
+            },
+            {
+                "query_type": [
+                    "HTTPS"
+                ],
+                "server": "system"
             },
             {
                 "domain": [

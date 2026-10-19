@@ -185,7 +185,7 @@ const MIXED_INBOUND = {
     set_system_proxy: false,
 };
 
-function buildInbounds(opts: { hasTun: boolean }): unknown[] {
+function buildInbounds(opts: { hasTun: boolean }): { tag: string }[] {
     return opts.hasTun ? [TUN_INBOUND, MIXED_INBOUND] : [MIXED_INBOUND];
 }
 
@@ -234,7 +234,7 @@ function buildDnsServers(
 
 function buildDnsRules(
     intent: RegionIntent,
-    opts: { hasFakeIp: boolean; isRules: boolean },
+    opts: { hasFakeIp: boolean; isRules: boolean; inboundTags: string[] },
 ): DnsRule[] {
     const rules: DnsRule[] = [
         // Universal: reject HTTPS / SVCB / PTR queries.
@@ -256,11 +256,24 @@ function buildDnsRules(
         //      (the answer IP is synthetic) and for real IPs they leak
         //      client destination choices. Cheap to drop.
         //
+        // All three concern queries apps send through an inbound, so the
+        // rule is scoped to inbounds: the kernel's own HTTPS lookup for an
+        // outbound's ECH config carries no inbound and must not be refused,
+        // or every ECH node fails before its handshake.
+        //
         // Before removing this rule, verify all three reasons have been
         // addressed in whatever sing-box version you're on.
         {
+            inbound: opts.inboundTags,
             query_type: ['HTTPS', 'SVCB', 'PTR'],
             action: 'reject',
+        },
+        // Any HTTPS query left is the kernel fetching an ECH config. It must
+        // not reach `dns_proxy`: that server dials through ExitGateway, i.e.
+        // through the very ECH node waiting for this answer, which deadlocks.
+        {
+            query_type: ['HTTPS'],
+            server: CONTRACT_DNS_TAGS.SYSTEM,
         },
     ];
 
@@ -364,7 +377,7 @@ function buildDnsRules(
 
 function buildDns(
     intent: RegionIntent,
-    opts: { hasFakeIp: boolean; isRules: boolean },
+    opts: { hasFakeIp: boolean; isRules: boolean; inboundTags: string[] },
 ): SingBoxConfig['dns'] {
     return {
         servers: buildDnsServers(intent, opts),
@@ -618,11 +631,16 @@ function buildRoute(
 export function build(intent: RegionIntent, variant: Variant): SingBoxConfig {
     const hasTun = variant.startsWith('tun-');
     const isRules = variant.endsWith('-rules');
+    const inbounds = buildInbounds({ hasTun });
 
     return {
         log: BASE_LOG,
-        dns: buildDns(intent, { hasFakeIp: hasTun, isRules }),
-        inbounds: buildInbounds({ hasTun }),
+        dns: buildDns(intent, {
+            hasFakeIp: hasTun,
+            isRules,
+            inboundTags: inbounds.map((inbound) => inbound.tag),
+        }),
+        inbounds,
         route: buildRoute(intent, { isRules, hasTun }),
         // Deep-clone so mutations by OneBox's runtime merger don't bleed
         // across multiple builds in the same process.
