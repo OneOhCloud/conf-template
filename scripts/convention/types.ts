@@ -289,6 +289,7 @@ export interface DnsQueryRule {
     rule_set?: string[];
     server?: string;
     action?: 'reject' | 'evaluate';
+    timeout?: string;
 }
 
 /**

@@ -110,7 +110,7 @@ function supportsHttpClients(version: Version): boolean {
  */
 export function expectedResponseProbe(intent: RegionIntent): DnsRule[] {
     return [
-        { action: 'evaluate', server: CONTRACT_DNS_TAGS.SYSTEM },
+        { action: 'evaluate', server: CONTRACT_DNS_TAGS.SYSTEM, timeout: '1500ms' },
         {
             match_response: true,
             rule_set: [intent.directSet.ipRuleSet],

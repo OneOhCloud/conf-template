@@ -70,7 +70,8 @@
             },
             {
                 "action": "evaluate",
-                "server": "system"
+                "server": "system",
+                "timeout": "1500ms"
             },
             {
                 "match_response": true,

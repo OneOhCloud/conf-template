@@ -334,6 +334,7 @@ function buildDnsRules(
         rules.push({
             action: 'evaluate',
             server: CONTRACT_DNS_TAGS.SYSTEM,
+            timeout: '1500ms',
         });
         rules.push({
             match_response: true,
